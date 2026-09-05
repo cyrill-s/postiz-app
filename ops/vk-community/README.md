@@ -1,41 +1,48 @@
-# VK community provider
+# VK community channels (manual token)
 
-Base: upstream Postiz v2.23.0, commit 1e4c8dd5c4f70c4d0abd01e23cc42d5b533d1ab9.
-Production: https://poster.generationl.ru, /opt/postiz-next on 185.119.58.121.
+Production: https://poster.generationl.ru, `/opt/postiz-next` on 185.119.58.121.
+Base: upstream Postiz v2.23.0 (`1e4c8dd5c4f70c4d0abd01e23cc42d5b533d1ab9`).
 
-## Authentication prerequisite
+## Connect a community
 
-The existing VK ID application issues tokens that return VK error 1051 for
-groups.get and account.getAppPermissions. Its client ID also returns HTTP 401
-from oauth.vk.com/authorize. It cannot power community publishing.
+1. In VK: community management → API → access tokens. Create a community token
+   with wall permission. Do not use an application secret, service key or VK ID token.
+2. Postiz: Add Channel → VK — сообщество → paste the community token → Connect.
+3. Postiz derives the group's ID, name and avatar from the token. Repeat for each
+   community. Reconnecting the same group updates its key without creating a duplicate.
 
-Configure a VK API OAuth application with user publishing permissions in the
-server's private `/opt/postiz-next/.env`:
+No OAuth application, application ID/secret, redirect URI or approval of an OAuth
+app is required for this connection method. The earlier OAuth implementation has
+been replaced at the user's request. VK_COMMUNITY_ID/SECRET are unused.
 
-```
-VK_COMMUNITY_ID=<VK API application ID>
-VK_COMMUNITY_SECRET=<VK API application secret>
-```
+Supported in this provider: text and links. VK rejects photo wall-upload methods
+with community auth (error 27), even with the photos permission. Photo/video uploads
+are therefore blocked at scheduling validation and again at publication. The form
+and editor explain this. Delete already published posts in VK itself: wall.delete
+also rejected our community token with error 27. Comments are not exposed in the UI.
 
-The application must allow `https://poster.generationl.ru/integrations/social/vk`
-as its redirect URI. The new provider requests wall, groups, photos and video
-through oauth.vk.com authorization-code flow. VK must actually grant
-these permissions to the application: creating a VK ID login app is insufficient.
-Do not use credentials from unofficial third-party applications.
+Live token verification on 2026-09-05 established ownership of faberlicglobal,
+community 102697991, with wall/photos/docs/stories permissions. wall.post returned
+post ID 148. Automatic readback/deletion could not complete with this token; manual
+cleanup was requested from the user. No additional live posts should be published
+until that cleanup is confirmed.
 
-Until configured, Add Channel → VK — сообщество displays an actionable setup
-message. Once configured: sign into VK, select one administered/edited community,
-save; repeat for another channel. The server rechecks admin_level >= 2.
-The existing personal VK channel remains separate.
+## Security and identity
 
-Tokens from legacy OAuth have no refresh endpoint; expired/revoked access prompts
-reconnection. OAuth reconnection preserves the original channel identity.
-The generic callback correction preserves the actual OAuth token lifetime and
-refresh token instead of overwriting them with a query-string value.
+- groups.getTokenPermissions rejects user/service tokens and verifies wall scope.
+- groups.getById is called without a caller-supplied group_id. VK identifies the
+  token's own community; public metadata is not treated as proof of ownership.
+- Integration IDs are `vk-community:<group ID>`, distinct from personal VK channels.
+- Integration.token is encrypted with Postiz's existing AuthService encryption;
+  decryption occurs only at the VK request boundary.
+- The manual form sends credentials in a POST body, not callback URLs or history.
+- Connection nonces are consumed atomically with Redis GETDEL for this provider.
+- VK errors are sanitized; API request_params and credentials are not logged.
+- Community tokens do not have a refresh endpoint. On revocation, enter a new key.
 
-## Build and checks
+## Build and verify locally
 
-Use Node 22 and pnpm 10.6.1. No dependencies were changed.
+Node 22; pnpm 10.6.1; unchanged dependency lockfile.
 
 ```
 pnpm install --frozen-lockfile
@@ -50,48 +57,40 @@ pnpm run build:frontend
 python3 ops/vk-community/package.py
 ```
 
-The packaging script copies only changed compiled JS into both backend and
-orchestrator, the frontend build, source changes, and icon. Existing Linux native
-dependencies stay in the pinned base image. Next's build cache is excluded.
-`package.py` requires a committed working tree and includes the matching source
-archive at `/source/postiz-vk-community.tar.gz`.
+Packaging requires a committed tree. It includes changed backend/orchestrator JS,
+frontend production build without cache, changed source, and source archive at
+`/source/postiz-vk-community.tar.gz` (requires Postiz sign-in). Linux native
+libraries remain in the pinned base image.
 
-## Deployment and rollback
+## Deploy with resource limits preserved
 
-Transfer `.local-build/release` to a new release directory on the server; assemble
-the overlay image using the Dockerfile there. This only copies already compiled
-artifacts. Never run pnpm install, tsc or Next build on this shared VPS.
+Transfer `.local-build/release` to a new release directory under
+`/opt/postiz-next/releases/`. Assemble image using its Dockerfile: only compiled
+artifacts are copied. Never run dependency installation or application compilation
+on the shared VPS.
 
-Copy compose.override.yaml to /opt/postiz-next/docker-compose.vk-community.yaml.
-Start only app, with both compose files, from /opt/postiz-next:
+Copy compose.override.yaml to `/opt/postiz-next/docker-compose.vk-community.yaml`.
+From `/opt/postiz-next`, run:
 
 ```
 docker compose -f docker-compose.yaml -f docker-compose.vk-community.yaml up -d --no-deps app
 ```
 
-The override changes only app image and the two VK environment variables. All
-memory, CPU, swap, pids, OOM priority and log limits come from the existing base
-compose file. Postiz app remains 3 GiB / 1.25 CPUs. No DB migrations are needed.
-All other Postiz services and AI-bot containers must retain their container IDs
-and start times. Verify /auth, /api/integrations, jsia.ru/health and app Docker health.
-This version does not expose /api/health (it returns 404).
+Only app's image changes. Existing memory/swap (3 GiB), CPU (1.25), CPU shares 128,
+OOM priority 700 and pids limit 1024 are inherited from the untouched base compose.
+No schema change or manual DB migration is required. Verify /auth=200,
+/api/integrations=200, jsia.ru/health=200 and Docker health; other container IDs and
+start times must remain unchanged. /api/health is not implemented in this version.
 
-Rollback (same directory):
+Rollback to the previous custom image by restoring its image tag in the override
+and running the same command. The official base image can be restored with:
 
 ```
 docker compose -f docker-compose.yaml up -d --no-deps app
 ```
 
-This returns to the pinned official image without deleting volumes or changing
-other containers. New community channels require the custom image to publish.
+Returning to an older image does not delete volumes, but community-token channels
+require the current provider to decrypt their credentials and publish.
 
-## Validation limits
-
-Unit tests cover OAuth configuration/scopes, distinct community IDs, server-side
-permission validation, text/photo/video/comment routing, API errors and revocation.
-The requested live test target is https://vk.ru/faberlicglobal (102697991).
-No live test publication has been performed: a suitable VK API app is required.
-
-Sources: [VK OAuth SDK](https://github.com/VKCOM/vk-php-sdk/blob/master/README.md#4-authorization),
-[VK API schema](https://github.com/VKCOM/vk-api-schema),
-[upstream VK ID issue](https://github.com/gitroomhq/postiz-app/issues/1408).
+Sources: [VK schema](https://github.com/VKCOM/vk-api-schema),
+[community photo upload restriction](https://github.com/VKCOM/vk-api-schema/issues/242).

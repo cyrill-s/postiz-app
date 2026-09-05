@@ -216,6 +216,27 @@ export const CustomVariables: FC<{
           }`
         )
       ).json();
+      if (identifier === 'vk-community') {
+        // Community keys must travel in a POST body, never in browser history,
+        // callback query strings or reverse-proxy access logs.
+        const response = await fetch('/integrations/social-connect/vk-community', {
+          method: 'POST',
+          body: JSON.stringify({
+            state: url,
+            code: Buffer.from(JSON.stringify(data)).toString('base64'),
+            timezone: String(-new Date().getTimezoneOffset()),
+          }),
+        });
+        if (!response.ok) {
+          const error = await response.json().catch(() => ({}));
+          methods.setError('root', { message: error.message || error.msg || 'Не удалось подключить сообщество. Проверьте ключ и повторите попытку.' });
+          return;
+        }
+        methods.reset();
+        modals.closeAll();
+        gotoUrl(`/launches?added=vk-community${onboarding ? '&onboarding=true' : ''}`);
+        return;
+      }
       modals.closeAll();
       gotoUrl(
         `/integrations/social/${identifier}?state=${url}&code=${Buffer.from(
@@ -223,7 +244,7 @@ export const CustomVariables: FC<{
         ).toString('base64')}${onboarding ? '&onboarding=true' : ''}`
       );
     },
-    [variables, onboarding]
+    [variables, onboarding, identifier, fetch, methods, modals, gotoUrl]
   );
 
   const t = useT();
@@ -235,6 +256,12 @@ export const CustomVariables: FC<{
           className="gap-[8px] flex flex-col pt-[10px]"
           onSubmit={methods.handleSubmit(submit)}
         >
+          {identifier === 'vk-community' && (
+            <p className="text-[14px]">
+              Сообщество определится по ключу. Можно публиковать текст и ссылки.
+              Загрузка фото и видео с ключом сообщества недоступна.
+            </p>
+          )}
           {variables.map((variable) => (
             <div key={variable.key}>
               {variable.hint ? (
@@ -264,8 +291,11 @@ export const CustomVariables: FC<{
               )}
             </div>
           ))}
+          {methods.formState.errors.root?.message && (
+            <p role="alert" className="text-red-500">{String(methods.formState.errors.root.message)}</p>
+          )}
           <div>
-            <Button type="submit">{t('connect', 'Connect')}</Button>
+            <Button type="submit" disabled={methods.formState.isSubmitting}>{t('connect', 'Connect')}</Button>
           </div>
         </form>
       </FormProvider>

@@ -5,9 +5,11 @@ import subprocess
 
 root = Path(__file__).resolve().parents[2]
 release = root / '.local-build/release'
-release.mkdir(parents=True, exist_ok=True)
 if subprocess.check_output(['git', 'status', '--porcelain'], cwd=root).strip():
     raise SystemExit('Commit source changes before packaging.')
+if release.exists():
+    shutil.rmtree(release)
+release.mkdir(parents=True)
 
 shutil.copytree(root / 'apps/frontend/.next', release / 'frontend-next',
                 dirs_exist_ok=True, ignore=shutil.ignore_patterns('cache'))
@@ -24,7 +26,7 @@ for extension in ('.js', '.js.map', '.d.ts'):
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(root / f'apps/backend/dist/{controller}{extension}', target)
 
-changed = subprocess.check_output(['git', 'diff', '--name-only', 'v2.23.0', 'HEAD'], cwd=root, text=True).splitlines()
+changed = subprocess.check_output(['git', 'diff', '--name-only', '--diff-filter=ACMR', 'v2.23.0', 'HEAD'], cwd=root, text=True).splitlines()
 for name in changed:
     if name.startswith(('apps/', 'libraries/')) and not name.endswith('.spec.ts'):
         target = release / 'overlay' / name
