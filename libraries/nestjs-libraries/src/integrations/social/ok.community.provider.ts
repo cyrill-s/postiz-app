@@ -33,7 +33,7 @@ export class OkCommunityProvider
   editor = 'normal' as const;
   override maxConcurrentJob = 1;
   toolTip =
-    'Отдельный канал для каждой группы. Нужны ключ приложения и пара access_token / session_secret_key администратора.';
+    'Отдельный канал для каждой группы. Нужны ключ приложения и токен администратора и секретный ключ приложения.';
   maxLength() {
     return 10000;
   }
@@ -62,11 +62,11 @@ export class OkCommunityProvider
         hint: 'Настройки приложения → Вечный access_token. Ключ из раздела сообщений группы не подходит.',
       },
       {
-        key: 'sessionSecret',
-        label: 'Секрет сессии (session_secret_key)',
+        key: 'applicationSecret',
+        label: 'Секретный ключ приложения',
         type: 'password' as const,
         validation: '/^[A-Fa-f0-9]{32}$/',
-        hint: 'Выдаётся вместе с access_token. Не вставляйте сюда секретный ключ приложения.',
+        hint: 'Из письма с данными приложения OK. Используется для вычисления секрета сессии; сам ключ приложения не сохраняется.',
       },
     ];
   }
@@ -102,8 +102,16 @@ export class OkCommunityProvider
           typeof data[key] === 'string' ? data[key].trim() : '',
         ])
       ) as Credentials;
+      if (typeof data.applicationSecret === 'string') {
+        const applicationSecret = data.applicationSecret.trim();
+        if (!/^[a-fA-F0-9]{32}$/.test(applicationSecret))
+          return 'Проверьте секретный ключ приложения из письма OK.';
+        credentials.sessionSecret = createHash('md5')
+          .update(credentials.token + applicationSecret)
+          .digest('hex');
+      }
       if (!this.validCredentials(credentials))
-        return 'Проверьте ID группы, публичный ключ приложения и пару токен / секрет сессии.';
+        return 'Проверьте ID группы, публичный ключ приложения и токен и секретный ключ приложения.';
     } catch {
       return 'Заполните данные приложения и группы.';
     }
@@ -123,7 +131,7 @@ export class OkCommunityProvider
             ext_perm: permission,
           })) !== true
         )
-          return `Нет разрешения ${permission}. Получите право для приложения OK и создайте новую пару токен / секрет сессии.`;
+          return `Нет разрешения ${permission}. Получите право для приложения OK и создайте новую токен и секретный ключ приложения.`;
       }
       const members = await this.api<
         Array<{ groupId: string; userId: string; status: string }>
@@ -241,7 +249,7 @@ export class OkCommunityProvider
           this.identifier,
           '{}',
           '{}',
-          'Токен OK недействителен. Подключите группу с новой парой токен / секрет сессии.'
+          'Токен OK недействителен. Подключите группу с новым токеном и ключом приложения.'
         );
       this.fail(
         `OK: ошибка ${code}. Проверьте права приложения и доступ администратора группы.`

@@ -24,10 +24,21 @@ describe('OK community channels', () => {
   });
   afterEach(() => jest.restoreAllMocks());
   it('uses password fields for both secrets and one-use connection state', async () => {
-    expect((await provider.customFields()).filter(f => f.type === 'password').map(f => f.key)).toEqual(['token', 'sessionSecret']);
+    expect((await provider.customFields()).filter(f => f.type === 'password').map(f => f.key)).toEqual(['token', 'applicationSecret']);
     const first = await provider.generateAuthUrl();
     expect(first.url).toBe(first.state);
     expect(first.state).not.toBe((await provider.generateAuthUrl()).state);
+  });
+  it('derives the session secret from an application secret without storing it', async () => {
+    setup(); reply([{ uid: credentials.groupId, name: 'Группа' }]);
+    const applicationSecret = 'abcdef0123456789abcdef0123456789';
+    const result = await auth({ ...credentials, sessionSecret: undefined, applicationSecret });
+    expect(typeof result).not.toBe('string');
+    if (typeof result === 'string') throw Error(result);
+    const stored = JSON.parse(AuthService.fixedDecryption(result.accessToken));
+    expect(stored.sessionSecret).toBe(createHash('md5').update(credentials.token + applicationSecret).digest('hex'));
+    expect(stored.applicationSecret).toBeUndefined();
+    expect(JSON.stringify(stored)).not.toContain(applicationSecret);
   });
   it('validates administrator identity and stores encrypted credentials per group', async () => {
     setup(); reply([{ uid: credentials.groupId, name: 'Группа' }]);

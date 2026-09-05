@@ -8,17 +8,23 @@ Initial requested group: https://ok.ru/group/70000035141015.
 
 This integration uses OK REST API, not the group messaging/Graph API token.
 Each connection asks for the numeric group ID, application public key
-(`application_key`), and the paired `access_token` / `session_secret_key`.
-The application secret is NOT required by Postiz.
+(`application_key`), creator `access_token`, and application secret from the
+registration email. Derive session_secret_key = MD5(access_token + application
+secret) on connection, then store only that derived secret with the token/public
+key/group ID. The application secret itself is never persisted. Legacy API
+clients supplying sessionSecret directly remain accepted.
 
 OK documents creator token generation in application settings (OAuth platform,
 “Вечный access_token”). Application ID/public/secret keys are delivered by email.
 The games/myuploaded screen directs mini-app creation to VK Mini Apps, but the
 user found https://ok.ru/app/setup, and the signed-in UI confirms that an
 OAuth application can be created directly there. Use that route for this task.
-The form also requires two-factor authentication. A draft named Postiz Generationl
-is prepared with OAuth platform, site URL and the three permissions below;
-saving is waiting for user confirmation. No application has been created yet.
+After explicit user approval, application poster.genL (shortname postergenl)
+was created, ID 512004900971. Metadata contains no reference to the underlying
+software name. The settings UI generated a creator token for user 910113212567
+with VALUABLE_ACCESS, GROUP_CONTENT and PHOTO_CONTENT. Unlike older docs, the
+new UI shows only access_token, hence deriving the session secret from the app
+secret. Live API permission/ownership verification is still pending credentials.
 Do not assume a VK ID login token grants OK publishing access.
 
 Required: VALUABLE_ACCESS and GROUP_CONTENT. Photo posting additionally requires
@@ -26,13 +32,10 @@ PHOTO_CONTENT. OK says permissions are requested from api-support@ok.ru with the
 application ID and an explanation. Regenerate the token pair after permissions
 are granted. Draft for the owner to send (not sent by the agent):
 
-> Здравствуйте! Прошу выдать приложению [ID приложения OK] разрешения
+> Здравствуйте! Прошу выдать приложению poster.genL [ID приложения OK] разрешения
 > VALUABLE_ACCESS, GROUP_CONTENT и PHOTO_CONTENT для публикации текста, ссылок
-> и фотографий в моей группе https://ok.ru/group/70000035141015 через собственный
-> экземпляр Postiz https://poster.generationl.ru. Публикации создаёт и планирует
+> и фотографий в моей группе https://ok.ru/group/70000035141015 через мой сервис планирования публикаций https://poster.generationl.ru. Публикации создаёт и планирует
 > администратор группы. Доступ к сообщениям, друзьям и email пользователей не нужен.
-> Подскажите, пожалуйста, актуальный способ создания внешнего приложения для
-> этого сценария, если создание через прежний интерфейс больше недоступно.
 
 ## Behavior and security
 
@@ -99,3 +102,6 @@ In low-memory mode only `main` loads workflow code. All Postiz workflow starts
 use `main`; platform queues handle provider activities via proxyActivities.
 Keeping those workers activity-only avoids a redundant V8 workflow VM per
 provider while retaining every platform queue, including `ok`.
+
+User preference: external application metadata and support correspondence use
+poster.genL, with no mention of the underlying software name.
