@@ -219,7 +219,7 @@ export const CustomVariables: FC<{
       if (['vk-community', 'ok-community'].includes(identifier)) {
         // Community keys must travel in a POST body, never in browser history,
         // callback query strings or reverse-proxy access logs.
-        const response = await fetch(`/integrations/social-connect/${identifier}`,  {
+        const response = await fetch(`/integrations/social-connect/${identifier}`, {
           method: 'POST',
           body: JSON.stringify({
             state: url,
@@ -285,6 +285,7 @@ export const CustomVariables: FC<{
                   </div>
                   <Input
                     label=""
+                    aria-label={variable.label}
                     name={variable.key}
                     type={variable.type == 'text' ? 'text' : 'password'}
                   />

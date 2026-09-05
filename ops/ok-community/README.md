@@ -14,7 +14,11 @@ The application secret is NOT required by Postiz.
 OK documents creator token generation in application settings (OAuth platform,
 “Вечный access_token”). Application ID/public/secret keys are delivered by email.
 The docs also announce migration of newly created mini-apps to VK Mini Apps;
-confirm the currently available external app creation route in the signed-in UI.
+the signed-in UI confirmed that no legacy creation button remains. The official
+quick-start says to enable “Опубликовать в Одноклассниках” in a VK Mini App and
+link the OK developer account; synchronization takes 5–30 minutes.
+The browser tool blocks dev.vk.com/ru/admin/create-app, so the user must complete
+that setup step. See https://apiok.ru/apps/fast.
 Do not assume a VK ID login token grants OK publishing access.
 
 Required: VALUABLE_ACCESS and GROUP_CONTENT. Photo posting additionally requires
@@ -54,7 +58,8 @@ are granted. Draft for the owner to send (not sent by the agent):
 ## Validation and deployment
 
 Run `pnpm exec jest --config jest.ok-community.config.cjs --runInBand` and the
-existing `jest.vk-community.config.cjs`, then local backend/frontend builds.
+existing `jest.vk-community.config.cjs`, then local backend/frontend/orchestrator
+builds and `node ops/ok-community/bundle-workflows.cjs`.
 The existing `ops/vk-community/package.py` packages both custom providers into
 backend and orchestrator artifacts, preserving the pinned Linux base image.
 No dependencies or database schema are changed. Build only the copy-layer image
@@ -80,3 +85,12 @@ from mocked tests or provider catalog visibility.
 - https://apiok.ru/dev/methods/rest/photosV2/photosV2.getUploadUrl
 - https://apiok.ru/dev/examples/photo_upload
 - https://apiok.ru/dev/graph_api/bot_api (messaging token is separate)
+
+The production override enables TEMPORAL_LOW_MEMORY and points
+TEMPORAL_WORKFLOW_BUNDLE at the locally prebuilt workflow bundle. The installed
+Temporal SDK must match the bundle SDK (verified 1.15.0 on both machines). This
+avoids repeated Webpack compilation for every queue on the VPS. Low-memory mode
+caps activities at 4 per queue (or the lower provider cap), workflow task
+concurrency at 2, cached workflows at 10, and uses one reused V8 context thread.
+All queues remain enabled; aliases share one queue, including the new `ok` root.
+No queued jobs are deleted or moved.

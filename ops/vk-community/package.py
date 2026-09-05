@@ -20,6 +20,14 @@ for app in ('backend', 'orchestrator'):
             target = release / f'overlay/apps/{app}/dist/{path}{extension}'
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(root / f'apps/backend/dist/{path}{extension}', target)
+    for name in ('temporal.module', 'temporal.queues'):
+        path = f'libraries/nestjs-libraries/src/temporal/{name}'
+        for extension in ('.js', '.js.map', '.d.ts'):
+            target = release / f'overlay/apps/{app}/dist/{path}{extension}'
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(root / f'apps/backend/dist/{path}{extension}', target)
+bundle = release / 'overlay/apps/orchestrator/workflow-bundle.js'
+shutil.copy2(root / '.local-build/workflow-bundle.js', bundle)
 controller = 'apps/backend/src/api/routes/no.auth.integrations.controller'
 for extension in ('.js', '.js.map', '.d.ts'):
     target = release / f'overlay/apps/backend/dist/{controller}{extension}'

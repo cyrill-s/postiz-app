@@ -1,3 +1,4 @@
+import { temporalQueues } from './temporal.queues';
 import { TemporalModule } from 'nestjs-temporal-core';
 import { socialIntegrationList } from '@gitroom/nestjs-libraries/integrations/integration.manager';
 
@@ -37,11 +38,10 @@ export const getTemporalModule = (
     logLevel: 'error',
     ...(isWorkers
       ? {
-          workers: [
+          workers: temporalQueues([
             { identifier: 'main', maxConcurrentJob: undefined },
             ...socialIntegrationList,
-          ]
-            .filter((f) => f.identifier.indexOf('-') === -1)
+          ])
             .map((integration) => ({
               integration,
               taskQueue: integration.identifier.split('-')[0],
@@ -61,20 +61,29 @@ export const getTemporalModule = (
 
               return {
                 taskQueue,
-                workflowsPath: path!,
-                activityClasses: activityClasses!,
-                autoStart: true,
-                ...(concurrency
+                ...(process.env.TEMPORAL_WORKFLOW_BUNDLE
                   ? {
-                      workerOptions: {
-                        maxConcurrentActivityTaskExecutions: concurrency,
+                      workflowBundle: {
+                        codePath: process.env.TEMPORAL_WORKFLOW_BUNDLE,
                       },
                     }
-                  : {
-                      workerOptions: {
-                        maxConcurrentActivityTaskExecutions: 1000000,
-                      },
-                    }),
+                  : { workflowsPath: path! }),
+                activityClasses: activityClasses!,
+                autoStart: true,
+                workerOptions: {
+                  maxConcurrentActivityTaskExecutions:
+                    process.env.TEMPORAL_LOW_MEMORY === 'true'
+                      ? Math.min(concurrency || 4, 4)
+                      : concurrency || 1000000,
+                  ...(process.env.TEMPORAL_LOW_MEMORY === 'true'
+                    ? {
+                        maxCachedWorkflows: 10,
+                        maxConcurrentWorkflowTaskExecutions: 2,
+                        workflowThreadPoolSize: 1,
+                        reuseV8Context: true,
+                      }
+                    : {}),
+                },
               };
             }),
         }
