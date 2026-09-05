@@ -28,7 +28,10 @@ export const ContinueIntegration: FC<{
   searchParams: any;
   logged: boolean;
 }> = (props) => {
-  const { provider, searchParams, logged } = props;
+  const { searchParams, logged } = props;
+  const provider = props.provider === 'vk' && String(searchParams.state || '').startsWith('vk-community-')
+    ? 'vk-community'
+    : props.provider;
   const { push } = useRouter();
   const t = useT();
   const fetch = useFetch();
@@ -96,6 +99,11 @@ export const ContinueIntegration: FC<{
 
   useEffect(() => {
     (async () => {
+      if (provider === 'vk-community' && searchParams.error) {
+        setErrorMessage(searchParams.error_description || 'VK не предоставил доступ. Повторите подключение.');
+        setError(true);
+        return;
+      }
       const timezone = String(dayjs.tz().utcOffset());
 
       // Try public endpoint first (handles both public and fallback scenarios)
@@ -260,6 +268,7 @@ export const ContinueIntegration: FC<{
       youtube: 'YouTube',
       gmb: 'Google Business',
       tumblr: 'Tumblr',
+      'vk-community': 'VK — сообщество',
     };
     return names[provider] || provider;
   }, [provider]);
