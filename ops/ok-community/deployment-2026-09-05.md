@@ -98,3 +98,27 @@ A temporary OK draft was saved through the browser and verified in Prisma and
 the calendar, then deleted through the UI. No public OK test post was sent; live
 delivery through the provider is still unverified. The reported pre-persistence
 failure is fixed, but this is not evidence of successful remote publication.
+
+## 2026-09-06: public preview HTTP 500
+
+Exact /p/cmtovkiwi0002qz84k6p8xgk6?share=true reproduced HTTP 500.
+Frontend logged MIMEType is not a constructor during bundled DOMPurify/jsdom
+module evaluation. Public posts API returned the post correctly; native
+isomorphic-dompurify in the pinned runtime loaded and sanitized correctly.
+Next config now externalizes isomorphic-dompurify.
+
+Intermediate vk-ok-8 exposed a packaging issue: recursive cache exclusion removed
+undici/lib/cache from the copied local external dependency. Packaging now points
+Turbopack's hashed DOMPurify external link to /app/node_modules/isomorphic-dompurify
+in the pinned Linux base, preserving its complete, matching runtime dependencies.
+Do not use vk-ok-8 as rollback.
+
+Final source 5b8ed85, image local/postiz:v2.23.0-vk-ok-9, release
+/opt/postiz-next/releases/vk-ok-9, manifest list
+sha256:c01b4bf9c6603a416aaf4cd8ff6246bf4cb62b8f5e0d6b282a2c56a856548ad2.
+Production frontend build passed. The exact hashed external module was exercised
+in the built Linux image under 512 MiB/0.5 CPU: it loads and strips script tags.
+After rollout the original preview URL returns HTTP 200; rendered HTML contains
+the group's name and all 654 characters of post text (after whitespace/markup
+normalization). Container healthy, memory about 1.2 GiB/3 GiB, cgroup OOM events zero.
+HTML sanitization remains enabled. No public posts were modified or sent.
