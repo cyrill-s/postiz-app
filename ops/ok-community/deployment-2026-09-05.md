@@ -74,3 +74,27 @@ queries found zero Post records for this OK integration (including deleted
 records), and only two older Telegram records across the database. Asked which
 text/action failed, or permission for one explicit test post and cleanup.
 No OK publication or deletion has been performed in this follow-up.
+
+## Follow-up: Publish now falsely reported success
+
+User clarified that Publish now closes the composer with success, but neither the
+calendar nor OK contains the post. Production ValidationPipe with CreatePostDto
+reproduced HTTP 400 for settings.__type=ok-community. Community providers were
+missing from all.providers.settings.ts. The frontend ignored the failed POST
+response and unconditionally announced success.
+
+Source 9f02353, image local/postiz:v2.23.0-vk-ok-7, release
+/opt/postiz-next/releases/vk-ok-7, manifest list
+sha256:a5ee15ace69de67630a4936364ef8834410d57083149eb2db9f1eb3e83abe447.
+Both community identifiers are now registered. Failed saves preserve the composer
+and show the error; network failures ask users to check the calendar before retry.
+Packaging includes compiled settings registration for backend and orchestrator.
+
+27 OK/queue/create-validation tests pass. The new validation tests first failed
+for OK now/schedule and VK community now, then passed after the fix. Unknown
+provider rejection remains covered. Backend and frontend production builds pass.
+The same production ValidationPipe repro now passes for both community providers.
+A temporary OK draft was saved through the browser and verified in Prisma and
+the calendar, then deleted through the UI. No public OK test post was sent; live
+delivery through the provider is still unverified. The reported pre-persistence
+failure is fixed, but this is not evidence of successful remote publication.
