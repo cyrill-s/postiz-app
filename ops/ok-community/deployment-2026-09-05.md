@@ -54,3 +54,23 @@ and filled password fields during later browser inspection.
 Rollback: restore image local/postiz:v2.23.0-vk-community-3 in the override and
 remove the two TEMPORAL options, then recreate only app using both existing
 compose files and --no-deps. The old image has no OK provider and uses more memory.
+
+## Follow-up: missing channel avatar
+
+Source 4944773, image local/postiz:v2.23.0-vk-ok-6, release
+/opt/postiz-next/releases/vk-ok-6, manifest list
+sha256:5e67e371e87843eaea112345a18ed47290eafbc94f22f596e21a6e9345b85f96.
+
+Live authenticate reproduced an empty picture with otherwise successful
+authentication. OK accepts request field pic_avatar but returns picAvatar.
+The provider now maps that response correctly. The regression test failed before
+the fix and all 23 OK/queue tests pass afterward; backend production build passed.
+Live authenticate now returns a picture. The existing group's avatar was imported
+using LocalStorage.uploadSimple and only its Integration.picture was updated.
+The local image endpoint returns HTTP 200 (1676 bytes).
+
+The user's reported missing publication is not yet reproduced. Read-only Prisma
+queries found zero Post records for this OK integration (including deleted
+records), and only two older Telegram records across the database. Asked which
+text/action failed, or permission for one explicit test post and cleanup.
+No OK publication or deletion has been performed in this follow-up.
