@@ -20,6 +20,12 @@ for app in ('backend', 'orchestrator'):
             target = release / f'overlay/apps/{app}/dist/{path}{extension}'
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(root / f'apps/backend/dist/{path}{extension}', target)
+    for name in ('all.providers.settings',):
+        path = f'libraries/nestjs-libraries/src/dtos/posts/providers-settings/{name}'
+        for extension in ('.js', '.js.map', '.d.ts'):
+            target = release / f'overlay/apps/{app}/dist/{path}{extension}'
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(root / f'apps/backend/dist/{path}{extension}', target)
     for name in ('temporal.module', 'temporal.queues'):
         path = f'libraries/nestjs-libraries/src/temporal/{name}'
         for extension in ('.js', '.js.map', '.d.ts'):

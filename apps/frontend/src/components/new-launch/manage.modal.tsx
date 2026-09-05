@@ -409,12 +409,34 @@ export const ManageModal: FC<AddEditModalProps> = (props) => {
       }
 
       if (!dummy) {
-        addEditSets
-          ? addEditSets(data)
-          : await fetch('/posts', {
+        if (addEditSets) {
+          await addEditSets(data);
+        } else {
+          try {
+            const response = await fetch('/posts', {
               method: 'POST',
               body: JSON.stringify(data),
             });
+            if (!response.ok) {
+              const error = await response.json().catch(() => null);
+              const message = Array.isArray(error?.message)
+                ? error.message.join('\n')
+                : typeof error?.message === 'string'
+                ? error.message
+                : t('post_save_failed', 'Could not save the post. Please try again.');
+              toaster.show(message, 'warning');
+              setLoading(false);
+              return;
+            }
+          } catch {
+            toaster.show(
+              t('post_save_connection_failed', 'Could not confirm that the post was saved. Check the calendar before trying again.'),
+              'warning'
+            );
+            setLoading(false);
+            return;
+          }
+        }
 
         if (!addEditSets) {
           mutate();
