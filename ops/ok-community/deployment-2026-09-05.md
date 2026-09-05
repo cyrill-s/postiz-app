@@ -1,11 +1,11 @@
 # Deployment 2026-09-05
 
-Final source: 5506541 on codex/ok-community.
-Image: local/postiz:v2.23.0-vk-ok-3.
-Manifest: sha256:489c478a8e9dea70637fcd28772c4a495d0faf7d3d9f804dfef2225bc05e2bb1.
-Release: /opt/postiz-next/releases/vk-ok-3.
+Final source: 8931b8c on codex/ok-community.
+Image: local/postiz:v2.23.0-vk-ok-5.
+Manifest: sha256:60c4b40efd1a3dc541c7f1eae16d15d9698242746b38bb94f02f08556fe90c85.
+Release: /opt/postiz-next/releases/vk-ok-5.
 
-Local backend, frontend and orchestrator production builds passed. 21 OK/queue
+Local backend, frontend and orchestrator production builds passed. 22 OK/queue
 tests and 15 VK regression tests passed. Linux provider imports passed under
 512 MiB / 0.5 CPU. Prebuilt workflow bundle and production SDK versions match
 (1.15.0). No dependencies or schema changed.
@@ -25,9 +25,10 @@ memory.events showed max=0, oom=0, oom_kill=0 after startup.
 
 Frontend version v2.23.0-vk-ok. Catalog includes vk, vk-community and ok-community.
 Browser verified Add Channel → Одноклассники — группа, four manual fields, both
-secrets rendered as password inputs. Group ID 70000035141015 is prefilled in the
-handoff form, but no credentials have been submitted. Existing Telegram and VK
-community channels are visible in the currently selected account.
+secrets rendered as password inputs. Group 70000035141015 connected successfully
+as Книжная лавка Дядюшки ОМа and is visible beside the existing Telegram and VK
+channels. Authentication verified current user, required API permissions and
+administrator/moderator membership before persisting the channel.
 
 All 17 unrelated container IDs, start times and resource limits remain unchanged.
 App limits remain RAM/swap 3 GiB, CPU 1.25, shares 128, OOM score 700, pids 1024.
@@ -35,15 +36,20 @@ App limits remain RAM/swap 3 GiB, CPU 1.25, shares 128, OOM score 700, pids 1024
 49618b31057cffa01f4f918601dcccec74a324e24cd87266ae805cb73678d24e.
 Only image and two Temporal options are set in the existing app override.
 
-Live OK authentication/posting is NOT yet verified. User confirmed email and
-obtained developer access, then found https://ok.ru/app/setup. This direct form
-allows an OAuth application, despite the games menu directing users to Mini Apps.
-Draft app Postiz Generationl is filled with site URL, VPS IP, OAuth platform and
-VALUABLE_ACCESS/GROUP_CONTENT/PHOTO_CONTENT set to required. Save is awaiting the
-user's explicit confirmation; the UI also says two-factor authentication is
-required. No app credentials were captured, no OK post created, no support email
-sent. App setup iframe URLs contain session credentials: suppress/redact them
-when inspecting later UI snapshots.
+Live OK authentication is verified; no OK post was created or published.
+The direct https://ok.ru/app/setup form created OAuth app poster.genL,
+ID 512004900971, shortname postergenl, with required
+VALUABLE_ACCESS/GROUP_CONTENT/PHOTO_CONTENT. External metadata does not mention
+the underlying software, as requested. Public and secret app keys arrived by
+email. The creator UI supplies an access token, not a session secret.
+
+The connection accepts an opaque application secret (not necessarily hex).
+It derives MD5(access_token + application_secret) and stores only the derived
+session secret in the encrypted credential bundle. Application secret is not
+persisted. A regression test covers a non-hex application secret. Clipboard
+insertion and browser inspection were performed without printing the secret.
+No support email was sent. Suppress/redact credential-bearing setup iframe URLs
+and filled password fields during later browser inspection.
 
 Rollback: restore image local/postiz:v2.23.0-vk-community-3 in the override and
 remove the two TEMPORAL options, then recreate only app using both existing
