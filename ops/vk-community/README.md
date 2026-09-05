@@ -48,6 +48,8 @@ Node 22; pnpm 10.6.1; unchanged dependency lockfile.
 pnpm install --frozen-lockfile
 pnpm exec jest --config jest.vk-community.config.cjs --runInBand
 pnpm run build:backend
+pnpm run build:orchestrator
+node ops/ok-community/bundle-workflows.cjs
 NEXT_PUBLIC_BACKEND_URL=https://poster.generationl.ru/api \
 FRONTEND_URL=https://poster.generationl.ru \
 BACKEND_INTERNAL_URL=http://127.0.0.1:3000 STORAGE_PROVIDER=local \
@@ -76,7 +78,8 @@ From `/opt/postiz-next`, run:
 docker compose -f docker-compose.yaml -f docker-compose.vk-community.yaml up -d --no-deps app
 ```
 
-Only app's image changes. Existing memory/swap (3 GiB), CPU (1.25), CPU shares 128,
+The override changes app's image and enables the low-memory Temporal options
+documented in ../ok-community/README.md. Existing memory/swap (3 GiB), CPU (1.25), CPU shares 128,
 OOM priority 700 and pids limit 1024 are inherited from the untouched base compose.
 No schema change or manual DB migration is required. Verify /auth=200,
 /api/integrations=200, jsia.ru/health=200 and Docker health; other container IDs and
