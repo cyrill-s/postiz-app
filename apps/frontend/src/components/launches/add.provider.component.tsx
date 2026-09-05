@@ -216,10 +216,10 @@ export const CustomVariables: FC<{
           }`
         )
       ).json();
-      if (identifier === 'vk-community') {
+      if (['vk-community', 'ok-community'].includes(identifier)) {
         // Community keys must travel in a POST body, never in browser history,
         // callback query strings or reverse-proxy access logs.
-        const response = await fetch('/integrations/social-connect/vk-community', {
+        const response = await fetch(`/integrations/social-connect/${identifier}`,  {
           method: 'POST',
           body: JSON.stringify({
             state: url,
@@ -234,7 +234,7 @@ export const CustomVariables: FC<{
         }
         methods.reset();
         modals.closeAll();
-        gotoUrl(`/launches?added=vk-community${onboarding ? '&onboarding=true' : ''}`);
+        gotoUrl(`/launches?added=${identifier}${onboarding ? '&onboarding=true' : ''}`);
         return;
       }
       modals.closeAll();
@@ -260,6 +260,13 @@ export const CustomVariables: FC<{
             <p className="text-[14px]">
               Сообщество определится по ключу. Можно публиковать текст и ссылки.
               Загрузка фото и видео с ключом сообщества недоступна.
+            </p>
+          )}
+          {identifier === 'ok-community' && (
+            <p className="text-[14px]">
+              Нужны права приложения VALUABLE_ACCESS и GROUP_CONTENT. Для фото — PHOTO_CONTENT.
+              Токен и секрет сессии выдаются вместе в настройках приложения OK.
+              Ключ бота группы для публикаций не подходит.
             </p>
           )}
           {variables.map((variable) => (

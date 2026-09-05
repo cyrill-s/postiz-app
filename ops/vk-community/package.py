@@ -14,7 +14,7 @@ release.mkdir(parents=True)
 shutil.copytree(root / 'apps/frontend/.next', release / 'frontend-next',
                 dirs_exist_ok=True, ignore=shutil.ignore_patterns('cache'))
 for app in ('backend', 'orchestrator'):
-    for name in ('integration.manager', 'social/vk.community.provider'):
+    for name in ('integration.manager', 'social/vk.community.provider', 'social/ok.community.provider'):
         path = f'libraries/nestjs-libraries/src/integrations/{name}'
         for extension in ('.js', '.js.map', '.d.ts'):
             target = release / f'overlay/apps/{app}/dist/{path}{extension}'

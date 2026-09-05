@@ -1,5 +1,7 @@
 'use client';
 
+import OkCommunityProvider from './ok/ok.community.provider';
+
 import DevtoProvider from '@gitroom/frontend/components/new-launch/providers/devto/devto.provider';
 import XProvider from '@gitroom/frontend/components/new-launch/providers/x/x.provider';
 import LinkedinProvider from '@gitroom/frontend/components/new-launch/providers/linkedin/linkedin.provider';
@@ -146,6 +148,10 @@ export const Providers = [
   {
     identifier: 'vk',
     component: VkProvider,
+  },
+  {
+    identifier: 'ok-community',
+    component: OkCommunityProvider,
   },
   {
     identifier: 'vk-community',

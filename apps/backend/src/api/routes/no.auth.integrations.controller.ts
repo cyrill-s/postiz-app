@@ -58,7 +58,7 @@ export class NoAuthIntegrationsController {
     const integrationProvider =
       this._integrationManager.getSocialIntegration(integration);
 
-    const getCodeVerifier = integration === 'vk-community'
+    const getCodeVerifier = ['vk-community', 'ok-community'].includes(integration)
       ? await ioRedis.getdel(`login:${body.state}`)
       : integrationProvider.customFields
       ? 'none'

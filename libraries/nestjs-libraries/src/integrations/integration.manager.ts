@@ -1,3 +1,4 @@
+import { OkCommunityProvider } from './social/ok.community.provider';
 import 'reflect-metadata';
 
 import { Injectable } from '@nestjs/common';
@@ -65,6 +66,7 @@ export const socialIntegrationList: Array<SocialAbstract & SocialProvider> = [
   new NostrProvider(),
   new VkProvider(),
   new VkCommunityProvider(),
+  new OkCommunityProvider(),
   new MediumProvider(),
   new DevToProvider(),
   new HashnodeProvider(),
