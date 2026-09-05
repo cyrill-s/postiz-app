@@ -13,12 +13,12 @@ The application secret is NOT required by Postiz.
 
 OK documents creator token generation in application settings (OAuth platform,
 “Вечный access_token”). Application ID/public/secret keys are delivered by email.
-The docs also announce migration of newly created mini-apps to VK Mini Apps;
-the signed-in UI confirmed that no legacy creation button remains. The official
-quick-start says to enable “Опубликовать в Одноклассниках” in a VK Mini App and
-link the OK developer account; synchronization takes 5–30 minutes.
-The browser tool blocks dev.vk.com/ru/admin/create-app, so the user must complete
-that setup step. See https://apiok.ru/apps/fast.
+The games/myuploaded screen directs mini-app creation to VK Mini Apps, but the
+user found https://ok.ru/app/setup, and the signed-in UI confirms that an
+OAuth application can be created directly there. Use that route for this task.
+The form also requires two-factor authentication. A draft named Postiz Generationl
+is prepared with OAuth platform, site URL and the three permissions below;
+saving is waiting for user confirmation. No application has been created yet.
 Do not assume a VK ID login token grants OK publishing access.
 
 Required: VALUABLE_ACCESS and GROUP_CONTENT. Photo posting additionally requires
@@ -94,3 +94,8 @@ caps activities at 4 per queue (or the lower provider cap), workflow task
 concurrency at 2, cached workflows at 10, and uses one reused V8 context thread.
 All queues remain enabled; aliases share one queue, including the new `ok` root.
 No queued jobs are deleted or moved.
+
+In low-memory mode only `main` loads workflow code. All Postiz workflow starts
+use `main`; platform queues handle provider activities via proxyActivities.
+Keeping those workers activity-only avoids a redundant V8 workflow VM per
+provider while retaining every platform queue, including `ok`.

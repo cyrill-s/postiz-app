@@ -61,7 +61,12 @@ export const getTemporalModule = (
 
               return {
                 taskQueue,
-                ...(process.env.TEMPORAL_WORKFLOW_BUNDLE
+                // All workflow starts use main; provider queues receive only
+                // activities (see posts.service startWorkflow/proxyTaskQueue).
+                // Avoid a separate workflow VM for each provider on small VPSes.
+                ...(process.env.TEMPORAL_LOW_MEMORY === 'true' && taskQueue !== 'main'
+                  ? {}
+                  : process.env.TEMPORAL_WORKFLOW_BUNDLE
                   ? {
                       workflowBundle: {
                         codePath: process.env.TEMPORAL_WORKFLOW_BUNDLE,

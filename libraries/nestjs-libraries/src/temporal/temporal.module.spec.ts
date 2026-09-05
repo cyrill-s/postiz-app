@@ -24,7 +24,8 @@ describe('Temporal provider queue routing', () => {
     const config = getTemporalModule(true, '/workflows', []) as any;
     for(const worker of config.workers) {
       expect(worker.workflowsPath).toBeUndefined();
-      expect(worker.workflowBundle).toEqual({ codePath: '/bundle.js' });
+      if (worker.taskQueue === 'main') expect(worker.workflowBundle).toEqual({ codePath: '/bundle.js' });
+      else expect(worker.workflowBundle).toBeUndefined();
       expect(worker.workerOptions).toMatchObject({ maxCachedWorkflows: 10, maxConcurrentWorkflowTaskExecutions: 2, workflowThreadPoolSize: 1, reuseV8Context: true });
       expect(worker.workerOptions.maxConcurrentActivityTaskExecutions).toBeLessThanOrEqual(4);
     }
