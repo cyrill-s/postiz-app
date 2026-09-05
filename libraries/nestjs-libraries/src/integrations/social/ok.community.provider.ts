@@ -65,7 +65,7 @@ export class OkCommunityProvider
         key: 'applicationSecret',
         label: 'Секретный ключ приложения',
         type: 'password' as const,
-        validation: '/^[A-Fa-f0-9]{32}$/',
+        validation: '/^[^\\s]{10,4096}$/',
         hint: 'Из письма с данными приложения OK. Используется для вычисления секрета сессии; сам ключ приложения не сохраняется.',
       },
     ];
@@ -104,7 +104,7 @@ export class OkCommunityProvider
       ) as Credentials;
       if (typeof data.applicationSecret === 'string') {
         const applicationSecret = data.applicationSecret.trim();
-        if (!/^[a-fA-F0-9]{32}$/.test(applicationSecret))
+        if (!/^\S{10,4096}$/.test(applicationSecret))
           return 'Проверьте секретный ключ приложения из письма OK.';
         credentials.sessionSecret = createHash('md5')
           .update(credentials.token + applicationSecret)

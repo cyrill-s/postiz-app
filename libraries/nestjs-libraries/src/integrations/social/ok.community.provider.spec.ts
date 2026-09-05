@@ -31,7 +31,7 @@ describe('OK community channels', () => {
   });
   it('derives the session secret from an application secret without storing it', async () => {
     setup(); reply([{ uid: credentials.groupId, name: 'Группа' }]);
-    const applicationSecret = 'abcdef0123456789abcdef0123456789';
+    const applicationSecret = 'AppSecretExample_12345==';
     const result = await auth({ ...credentials, sessionSecret: undefined, applicationSecret });
     expect(typeof result).not.toBe('string');
     if (typeof result === 'string') throw Error(result);
