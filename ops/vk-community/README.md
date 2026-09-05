@@ -73,7 +73,8 @@ The override changes only app image and the two VK environment variables. All
 memory, CPU, swap, pids, OOM priority and log limits come from the existing base
 compose file. Postiz app remains 3 GiB / 1.25 CPUs. No DB migrations are needed.
 All other Postiz services and AI-bot containers must retain their container IDs
-and start times. Verify /auth, /api/health, jsia.ru/health and app Docker health.
+and start times. Verify /auth, /api/integrations, jsia.ru/health and app Docker health.
+This version does not expose /api/health (it returns 404).
 
 Rollback (same directory):
 
