@@ -22,6 +22,8 @@ const nextConfig = {
   },
   reactStrictMode: false,
   transpilePackages: ['crypto-hash'],
+  // Keep jsdom's Node dependencies out of the server bundle.
+  serverExternalPackages: ['isomorphic-dompurify'],
   // Enable production sourcemaps for Sentry
   productionBrowserSourceMaps: true,
 
