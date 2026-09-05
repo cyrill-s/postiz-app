@@ -13,6 +13,15 @@ release.mkdir(parents=True)
 
 shutil.copytree(root / 'apps/frontend/.next', release / 'frontend-next',
                 dirs_exist_ok=True, ignore=shutil.ignore_patterns('cache'))
+# Turbopack uses hashed links for external packages. Resolve DOMPurify against
+# the pinned Linux image instead of copying the local dependency tree.
+for dependency in (release / 'frontend-next/node_modules').glob('isomorphic-dompurify-*'):
+    if dependency.is_symlink():
+        dependency.unlink()
+    else:
+        shutil.rmtree(dependency)
+    dependency.symlink_to('/app/node_modules/isomorphic-dompurify', target_is_directory=True)
+
 for app in ('backend', 'orchestrator'):
     for name in ('integration.manager', 'social/vk.community.provider', 'social/ok.community.provider'):
         path = f'libraries/nestjs-libraries/src/integrations/{name}'

@@ -1,6 +1,6 @@
 services:
   app:
-    image: local/postiz:v2.23.0-vk-ok-8
+    image: local/postiz:v2.23.0-vk-ok-9
     environment:
       TEMPORAL_WORKFLOW_BUNDLE: /app/apps/orchestrator/workflow-bundle.js
       TEMPORAL_LOW_MEMORY: 'true'
