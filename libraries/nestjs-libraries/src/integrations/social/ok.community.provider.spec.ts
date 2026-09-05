@@ -40,6 +40,11 @@ describe('OK community channels', () => {
     expect(stored.applicationSecret).toBeUndefined();
     expect(JSON.stringify(stored)).not.toContain(applicationSecret);
   });
+  it('maps the real OK picAvatar response while requesting pic_avatar', async () => {
+    setup(); reply([{ uid: credentials.groupId, name: 'Группа', picAvatar: 'https://i.mycdn.me/image?id=123' }]);
+    expect(await auth()).toMatchObject({ picture: 'https://i.mycdn.me/image?id=123' });
+    expect(body(4).get('fields')).toBe('uid,name,pic_avatar');
+  });
   it('validates administrator identity and stores encrypted credentials per group', async () => {
     setup(); reply([{ uid: credentials.groupId, name: 'Группа' }]);
     expect(await auth()).toMatchObject({ id: `ok-community:${credentials.groupId}`, accessToken: encrypted, name: 'Группа', expiresIn: 0 });

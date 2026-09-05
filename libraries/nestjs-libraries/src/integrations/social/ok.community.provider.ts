@@ -150,7 +150,7 @@ export class OkCommunityProvider
       )
         return 'Владелец токена должен быть администратором или модератором этой группы.';
       const groups = await this.api<
-        Array<{ uid: string; name: string; pic_avatar?: string }>
+        Array<{ uid: string; name: string; picAvatar?: string }>
       >('group.getInfo', accessToken, {
         uids: credentials.groupId,
         fields: 'uid,name,pic_avatar',
@@ -166,7 +166,7 @@ export class OkCommunityProvider
         accessToken,
         refreshToken: '',
         expiresIn: 0,
-        picture: group.pic_avatar || '',
+        picture: group.picAvatar || '',
         username: `group/${credentials.groupId}`,
       };
     } catch (error) {
