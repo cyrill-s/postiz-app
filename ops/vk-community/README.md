@@ -94,3 +94,19 @@ require the current provider to decrypt their credentials and publish.
 
 Sources: [VK schema](https://github.com/VKCOM/vk-api-schema),
 [community photo upload restriction](https://github.com/VKCOM/vk-api-schema/issues/242).
+
+## Deployment verified 2026-09-05
+
+Deployed `local/postiz:v2.23.0-vk-community-3`, implementation commit `d7e7cea`.
+Both local production builds passed; 15 provider tests passed. Backend initially
+stalled before Nest initialization; restarting only its PM2 process restored
+startup. Docker is healthy and all three documented HTTP checks return 200.
+Other container IDs/start times and all application limits are unchanged;
+observed app memory 2.418 GiB / 3 GiB. Base compose checksum is unchanged.
+
+Connected Faberlic. Косметика (`vk-community:102697991`) through the deployed
+connection endpoints and confirmed it in the signed-in calendar UI. Reconnection
+returns the same sole community channel; encrypted storage was verified by
+decryption in server memory. Replaying the consumed nonce is rejected. The
+local temporary token file was removed. Live test post 148 still requires the
+manual cleanup requested above.
