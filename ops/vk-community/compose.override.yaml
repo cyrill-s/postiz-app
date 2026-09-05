@@ -1,6 +1,6 @@
 services:
   app:
-    image: local/postiz:v2.23.0-vk-community-1
+    image: local/postiz:v2.23.0-vk-community-2
     environment:
       VK_COMMUNITY_ID: ${VK_COMMUNITY_ID:-}
       VK_COMMUNITY_SECRET: ${VK_COMMUNITY_SECRET:-}

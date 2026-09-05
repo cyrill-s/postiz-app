@@ -18,8 +18,8 @@ VK_COMMUNITY_SECRET=<VK API application secret>
 ```
 
 The application must allow `https://poster.generationl.ru/integrations/social/vk`
-as its redirect URI. The new provider requests wall, groups, photos, video and
-offline through oauth.vk.com authorization-code flow. VK must actually grant
+as its redirect URI. The new provider requests wall, groups, photos and video
+through oauth.vk.com authorization-code flow. VK must actually grant
 these permissions to the application: creating a VK ID login app is insufficient.
 Do not use credentials from unofficial third-party applications.
 

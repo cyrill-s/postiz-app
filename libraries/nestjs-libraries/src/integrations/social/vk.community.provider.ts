@@ -33,7 +33,7 @@ export class VkCommunityProvider
   identifier = 'vk-community';
   name = 'VK — сообщество';
   isBetweenSteps = true;
-  scopes = ['wall', 'photos', 'video', 'groups', 'offline'];
+  scopes = ['wall', 'photos', 'video', 'groups'];
   editor = 'normal' as const;
   override maxConcurrentJob = 1;
   toolTip =
@@ -134,7 +134,7 @@ export class VkCommunityProvider
   }
 
   async refreshToken(): Promise<AuthTokenDetails> {
-    // Legacy VK offline tokens have no refresh-token endpoint. On revocation,
+    // Legacy VK OAuth tokens have no refresh-token endpoint. On revocation,
     // Postiz marks the channel for reconnect rather than reusing an invalid token.
     return {
       id: '',

@@ -36,6 +36,7 @@ describe('VK community channels', () => {
     expect(a.state).toMatch(/^vk-community-.{32}$/);
     expect(a.state).not.toBe(b.state);
     expect(url.searchParams.get('scope')).toContain('groups');
+    expect(url.searchParams.get('scope')).not.toContain('offline');
     expect(url.origin).toBe('https://oauth.vk.com');
     expect(url.searchParams.get('response_type')).toBe('code');
     expect(url.searchParams.get('client_id')).toBe('api-app');
