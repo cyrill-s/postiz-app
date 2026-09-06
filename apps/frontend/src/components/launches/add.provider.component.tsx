@@ -216,33 +216,23 @@ export const CustomVariables: FC<{
           }`
         )
       ).json();
-      if (['vk-community', 'ok-community'].includes(identifier)) {
-        // Community keys must travel in a POST body, never in browser history,
-        // callback query strings or reverse-proxy access logs.
-        const response = await fetch(`/integrations/social-connect/${identifier}`, {
-          method: 'POST',
-          body: JSON.stringify({
-            state: url,
-            code: Buffer.from(JSON.stringify(data)).toString('base64'),
-            timezone: String(-new Date().getTimezoneOffset()),
-          }),
-        });
-        if (!response.ok) {
-          const error = await response.json().catch(() => ({}));
-          methods.setError('root', { message: error.message || error.msg || 'Не удалось подключить сообщество. Проверьте ключ и повторите попытку.' });
-          return;
-        }
-        methods.reset();
-        modals.closeAll();
-        gotoUrl(`/launches?added=${identifier}${onboarding ? '&onboarding=true' : ''}`);
+      // Credentials belong in the POST body, never browser history or callback URLs.
+      const response = await fetch(`/integrations/social-connect/${identifier}`, {
+        method: 'POST',
+        body: JSON.stringify({
+          state: url,
+          code: Buffer.from(JSON.stringify(data)).toString('base64'),
+          timezone: String(-new Date().getTimezoneOffset()),
+        }),
+      });
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        methods.setError('root', { message: error.message || error.msg || 'Не удалось подключить канал. Проверьте данные и повторите попытку.' });
         return;
       }
+      methods.reset();
       modals.closeAll();
-      gotoUrl(
-        `/integrations/social/${identifier}?state=${url}&code=${Buffer.from(
-          JSON.stringify(data)
-        ).toString('base64')}${onboarding ? '&onboarding=true' : ''}`
-      );
+      gotoUrl(`/launches?added=${identifier}${onboarding ? '&onboarding=true' : ''}`);
     },
     [variables, onboarding, identifier, fetch, methods, modals, gotoUrl]
   );

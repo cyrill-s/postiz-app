@@ -58,10 +58,8 @@ export class NoAuthIntegrationsController {
     const integrationProvider =
       this._integrationManager.getSocialIntegration(integration);
 
-    const getCodeVerifier = ['vk-community', 'ok-community'].includes(integration)
+    const getCodeVerifier = integrationProvider.customFields
       ? await ioRedis.getdel(`login:${body.state}`)
-      : integrationProvider.customFields
-      ? 'none'
       : await ioRedis.get(`login:${body.state}`);
     if (!getCodeVerifier) {
       throw new Error('Invalid state');

@@ -23,7 +23,7 @@ for dependency in (release / 'frontend-next/node_modules').glob('isomorphic-domp
     dependency.symlink_to('/app/node_modules/isomorphic-dompurify', target_is_directory=True)
 
 for app in ('backend', 'orchestrator'):
-    for name in ('integration.manager', 'social/vk.community.provider', 'social/ok.community.provider'):
+    for name in ('integration.manager', 'social/vk.community.provider', 'social/ok.community.provider', 'social/max.provider'):
         path = f'libraries/nestjs-libraries/src/integrations/{name}'
         for extension in ('.js', '.js.map', '.d.ts'):
             target = release / f'overlay/apps/{app}/dist/{path}{extension}'
@@ -41,6 +41,9 @@ for app in ('backend', 'orchestrator'):
             target = release / f'overlay/apps/{app}/dist/{path}{extension}'
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(root / f'apps/backend/dist/{path}{extension}', target)
+cert = release / 'overlay/ops/max/certs/russian_trusted_root_ca.pem'
+cert.parent.mkdir(parents=True, exist_ok=True)
+shutil.copy2(root / 'ops/max/certs/russian_trusted_root_ca.pem', cert)
 bundle = release / 'overlay/apps/orchestrator/workflow-bundle.js'
 shutil.copy2(root / '.local-build/workflow-bundle.js', bundle)
 controller = 'apps/backend/src/api/routes/no.auth.integrations.controller'

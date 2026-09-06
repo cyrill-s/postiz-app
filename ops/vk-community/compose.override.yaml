@@ -1,6 +1,7 @@
 services:
   app:
-    image: local/postiz:v2.23.0-vk-ok-9
+    image: local/postiz:v2.23.0-vk-ok-max-1
     environment:
       TEMPORAL_WORKFLOW_BUNDLE: /app/apps/orchestrator/workflow-bundle.js
       TEMPORAL_LOW_MEMORY: 'true'
+      NODE_EXTRA_CA_CERTS: /app/ops/max/certs/russian_trusted_root_ca.pem

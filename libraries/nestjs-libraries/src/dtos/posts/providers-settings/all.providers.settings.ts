@@ -55,6 +55,7 @@ export type AllProvidersSettings =
   | ProviderExtension<'mastodon', None>
   | ProviderExtension<'bluesky', None>
   | ProviderExtension<'telegram', None>
+  | ProviderExtension<'max', None>
   | ProviderExtension<'nostr', None>
   | ProviderExtension<'moltbook', MoltbookDto>
   | ProviderExtension<'vk', None>
@@ -96,6 +97,7 @@ export const allProviders = (setEmpty?: any) => {
     { value: setEmpty, name: 'mastodon' },
     { value: setEmpty, name: 'bluesky' },
     { value: setEmpty, name: 'telegram' },
+    { value: setEmpty, name: 'max' },
     { value: setEmpty, name: 'nostr' },
     { value: setEmpty, name: 'vk' },
     { value: setEmpty, name: 'vk-community' },

@@ -17,7 +17,7 @@ const validate = (provider: string, type = 'now') =>
   }, { type: 'body', metatype: CreatePostDto });
 
 describe('community posts through the create endpoint validation pipe', () => {
-  it.each(['ok-community', 'vk-community'])('accepts publish-now for %s', async provider => {
+  it.each(['ok-community', 'vk-community', 'max'])('accepts publish-now for %s', async provider => {
     await expect(validate(provider)).resolves.toMatchObject({
       type: 'now', posts: [{ settings: { __type: provider } }],
     });
