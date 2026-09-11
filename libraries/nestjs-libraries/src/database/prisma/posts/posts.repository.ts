@@ -177,6 +177,7 @@ export class PostsRepository {
         publishDate: true,
         releaseURL: true,
         releaseId: true,
+        telegramDelivery: true,
         state: true,
         intervalInDays: true,
         group: true,
@@ -289,6 +290,7 @@ export class PostsRepository {
           publishDate: true,
           releaseURL: true,
           releaseId: true,
+          telegramDelivery: true,
           state: true,
           intervalInDays: true,
           group: true,
@@ -386,6 +388,34 @@ export class PostsRepository {
           : {}),
         childrenPost: true,
       },
+    });
+  }
+
+  async getTelegramDelivery(orgId: string, id: string) {
+    const post = await this._post.model.post.findFirstOrThrow({
+      where: { id, organizationId: orgId, deletedAt: null },
+      select: { telegramDelivery: true },
+    });
+    return post.telegramDelivery;
+  }
+
+  saveTelegramDelivery(orgId: string, id: string, delivery: string) {
+    return this._post.model.post.update({
+      where: { id, organizationId: orgId, deletedAt: null },
+      data: { telegramDelivery: delivery },
+    });
+  }
+
+  claimTelegramRetry(orgId: string, id: string, delivery: string) {
+    return this._post.model.post.updateMany({
+      where: {
+        id,
+        organizationId: orgId,
+        state: 'ERROR',
+        telegramDelivery: delivery,
+        deletedAt: null,
+      },
+      data: { state: 'QUEUE', publishDate: new Date(), error: null },
     });
   }
 

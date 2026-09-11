@@ -1,3 +1,5 @@
+import { FormattedPreview } from './formatted-preview.component';
+import { supportsSocialFormatting } from '@gitroom/helpers/utils/social-formatting';
 import { useIntegration } from '@gitroom/frontend/components/launches/helpers/use.integration';
 import { useMediaDirectory } from '@gitroom/react/helpers/use.media.directory';
 import clsx from 'clsx';
@@ -14,6 +16,16 @@ export const GeneralPreviewComponent: FC<{
   const { value: topValue, integration } = useIntegration();
   const current = useLaunchStore((state) => state.current);
   const mediaDir = useMediaDirectory();
+
+  const platform =
+    current === 'global' ? 'telegram' : integration?.identifier || '';
+  if (supportsSocialFormatting(platform))
+    return (
+      <FormattedPreview
+        platform={platform}
+        maximumCharacters={props.maximumCharacters}
+      />
+    );
 
   const renderContent = topValue.map((p) => {
     const newContent = stripHtmlValidation(

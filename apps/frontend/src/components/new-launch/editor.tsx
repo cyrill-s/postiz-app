@@ -1,5 +1,17 @@
 'use client';
 
+import Italic from '@tiptap/extension-italic';
+import Strike from '@tiptap/extension-strike';
+import Code from '@tiptap/extension-code';
+import CodeBlock from '@tiptap/extension-code-block';
+import HardBreak from '@tiptap/extension-hard-break';
+import { Spoiler, Quote } from './rich-text.extensions';
+import { FormattingToolbar } from './formatting-toolbar';
+import {
+  compileSocialContent,
+  supportsSocialFormatting,
+} from '@gitroom/helpers/utils/social-formatting';
+
 import React, {
   FC,
   useCallback,
@@ -47,7 +59,7 @@ import Paragraph from '@tiptap/extension-paragraph';
 import Underline from '@tiptap/extension-underline';
 import { stripHtmlValidation } from '@gitroom/helpers/utils/strip.html.validation';
 import { History } from '@tiptap/extension-history';
-import { BulletList, ListItem } from '@tiptap/extension-list';
+import { BulletList, ListItem, OrderedList } from '@tiptap/extension-list';
 import { Bullets } from '@gitroom/frontend/components/new-launch/bullets.component';
 import Heading from '@tiptap/extension-heading';
 import { HeadingComponent } from '@gitroom/frontend/components/new-launch/heading.component';
@@ -69,34 +81,6 @@ import {
 import { DelayComponent } from '@gitroom/frontend/components/new-launch/delay.component';
 
 const MAX_UPLOAD_SIZE = 1024 * 1024 * 1024; // 1 GB
-
-const InterceptBoldShortcut = Extension.create({
-  name: 'preventBoldWithUnderline',
-
-  addKeyboardShortcuts() {
-    return {
-      'Mod-b': () => {
-        // For example, toggle bold while removing underline
-        this?.editor?.commands?.unsetUnderline();
-        return this?.editor?.commands?.toggleBold();
-      },
-    };
-  },
-});
-
-const InterceptUnderlineShortcut = Extension.create({
-  name: 'preventUnderlineWithUnderline',
-
-  addKeyboardShortcuts() {
-    return {
-      'Mod-u': () => {
-        // For example, toggle bold while removing underline
-        this?.editor?.commands?.unsetBold();
-        return this?.editor?.commands?.toggleUnderline();
-      },
-    };
-  },
-});
 
 export const EditorWrapper: FC<{
   totalPosts: number;
@@ -563,6 +547,7 @@ export const Editor: FC<{
   const t = useT();
   const toaster = useToaster();
   const editorRef = useRef<undefined | { editor: any }>(undefined);
+  const [, setEditorReady] = useState(0);
   const [loading, setLoading] = useState(false);
 
   const uppy = useUppyUploader({
@@ -660,8 +645,10 @@ export const Editor: FC<{
   });
 
   const valueWithoutHtml = useMemo(() => {
-    return stripHtmlValidation('normal', props.value || '', true);
-  }, [props.value]);
+    return supportsSocialFormatting(identifier)
+      ? compileSocialContent(identifier, props.value || '').text
+      : stripHtmlValidation('normal', props.value || '', true);
+  }, [props.value, identifier]);
 
   const addText = useCallback(
     (emoji: string) => {
@@ -715,6 +702,7 @@ export const Editor: FC<{
             </div>
             <div className="px-[10px] pt-[10px] bg-newBgColorInner rounded-t-[6px] relative z-[99]">
               <OnlyEditor
+                onReady={() => setEditorReady((value) => value + 1)}
                 value={props.value}
                 editorType={editorType}
                 onChange={props.onChange}
@@ -776,7 +764,7 @@ export const Editor: FC<{
                     />
                   }
                   toolBar={
-                    <div className="flex gap-[5px]">
+                    <div className="flex flex-wrap gap-[5px]">
                       <SignatureBox editor={editorRef?.current?.editor} />
                       {editorType !== 'none' && (
                         <>
@@ -790,23 +778,25 @@ export const Editor: FC<{
                           />
                         </>
                       )}
-                      {(editorType === 'markdown' || editorType === 'html') &&
-                        identifier !== 'telegram' && (
-                          <>
-                            <AComponent
-                              editor={editorRef?.current?.editor}
-                              currentValue={props.value!}
-                            />
-                            <Bullets
-                              editor={editorRef?.current?.editor}
-                              currentValue={props.value!}
-                            />
-                            <HeadingComponent
-                              editor={editorRef?.current?.editor}
-                              currentValue={props.value!}
-                            />
-                          </>
-                        )}
+                      {editorType !== 'none' && (
+                        <>
+                          <AComponent
+                            editor={editorRef?.current?.editor}
+                            currentValue={props.value!}
+                          />
+                          <FormattingToolbar
+                            editor={editorRef?.current?.editor}
+                          />
+                          {(editorType === 'html' ||
+                            editorType === 'markdown') &&
+                            !supportsSocialFormatting(identifier) && (
+                              <HeadingComponent
+                                editor={editorRef?.current?.editor}
+                                currentValue={props.value!}
+                              />
+                            )}
+                        </>
+                      )}
                       <div
                         data-tooltip-id="tooltip"
                         data-tooltip-content={t('insert_emoji', 'Insert Emoji')}
@@ -863,8 +853,9 @@ export const OnlyEditor = forwardRef<
     value: string;
     onChange: (value: string) => void;
     paste?: (event: ClipboardEvent | File[]) => void;
+    onReady?: () => void;
   }
->(({ editorType, value, onChange, paste }, ref) => {
+>(({ editorType, value, onChange, paste, onReady }, ref) => {
   const t = useT();
   const fetch = useFetch();
 
@@ -911,15 +902,21 @@ export const OnlyEditor = forwardRef<
       Text,
       Underline,
       Bold,
-      InterceptBoldShortcut,
-      InterceptUnderlineShortcut,
+      Italic,
+      Strike,
+      Code,
+      CodeBlock,
+      HardBreak,
+      Spoiler,
+      Quote,
+      OrderedList,
       BulletList,
       ListItem,
       Placeholder.configure({
         placeholder: t('write_something', 'Write something …'),
         emptyEditorClass: 'is-editor-empty',
       }),
-      ...(editorType === 'html' || editorType === 'markdown'
+      ...(editorType !== 'none'
         ? [
             Link.configure({
               openOnClick: false,
@@ -1029,6 +1026,7 @@ export const OnlyEditor = forwardRef<
         newGroupDelay: 100, // default is 500ms
       }),
     ],
+    onCreate: () => onReady?.(),
     content: value || '',
     shouldRerenderOnTransaction: true,
     immediatelyRender: false,

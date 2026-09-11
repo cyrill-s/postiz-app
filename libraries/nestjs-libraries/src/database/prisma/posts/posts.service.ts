@@ -1,3 +1,9 @@
+import { TelegramDeliveryState } from '@gitroom/nestjs-libraries/integrations/social/social.integrations.interface';
+import {
+  compileSocialContent,
+  supportsSocialFormatting,
+  socialContentLimit,
+} from '@gitroom/helpers/utils/social-formatting';
 import {
   BadRequestException,
   Injectable,
@@ -829,18 +835,60 @@ export class PostsService {
         const isX = integration.providerIdentifier === 'x';
 
         const emptyContent = (post.value || []).some((a) => {
-          const strip = stripHtmlValidation('normal', a.content || '', true);
+          const strip = supportsSocialFormatting(integration.providerIdentifier)
+            ? compileSocialContent(
+                integration.providerIdentifier,
+                a.content || ''
+              ).text
+            : stripHtmlValidation('normal', a.content || '', true);
           const length = isX ? weightedLength(strip) : strip.length;
           return length === 0 && (a.image || []).length === 0;
         });
 
-        const tooLong = (post.value || []).some((a) => {
-          const strip = stripHtmlValidation('normal', a.content || '', true);
-          const weighted = isX ? weightedLength(strip) : strip.length;
-          const totalCharacters =
-            weighted > strip.length ? weighted : strip.length;
-          return totalCharacters > (maximumCharacters || 1000000);
+        const tooLong = (post.value || []).some((a, index) => {
+          const strip = supportsSocialFormatting(integration.providerIdentifier)
+            ? compileSocialContent(
+                integration.providerIdentifier,
+                a.content || ''
+              ).text
+            : stripHtmlValidation('normal', a.content || '', true);
+          const compiled = supportsSocialFormatting(
+            integration.providerIdentifier
+          )
+            ? compileSocialContent(
+                integration.providerIdentifier,
+                a.content || ''
+              )
+            : undefined;
+          const weighted = compiled
+            ? compiled.length
+            : isX
+            ? weightedLength(strip)
+            : strip.length;
+          const totalCharacters = compiled
+            ? compiled.length
+            : weighted > strip.length
+            ? weighted
+            : strip.length;
+          return (
+            totalCharacters >
+            socialContentLimit(
+              integration.providerIdentifier,
+              !!a.image?.length,
+              (settings as { separateText?: boolean }).separateText === true &&
+                index === 0,
+              maximumCharacters || 1000000
+            )
+          );
         });
+
+        if (
+          integration.providerIdentifier === 'youtube' &&
+          post.value.some((a) =>
+            /[<>]/.test(compileSocialContent('youtube', a.content || '').text)
+          )
+        )
+          errors = 'Remove < and > from the video description.';
 
         return {
           id: integration.id,
@@ -964,6 +1012,53 @@ export class PostsService {
     } catch (err) {}
 
     return { id, state };
+  }
+
+  async getTelegramDelivery(
+    orgId: string,
+    id: string
+  ): Promise<TelegramDeliveryState | null> {
+    const saved = await this._postRepository.getTelegramDelivery(orgId, id);
+    return saved ? JSON.parse(saved) : null;
+  }
+
+  async saveTelegramDelivery(
+    orgId: string,
+    id: string,
+    delivery: TelegramDeliveryState
+  ) {
+    await this._postRepository.saveTelegramDelivery(
+      orgId,
+      id,
+      JSON.stringify(delivery)
+    );
+  }
+
+  async retryTelegramText(orgId: string, id: string) {
+    const post = await this._postRepository.getPostById(id, orgId);
+    const delivery: TelegramDeliveryState | null = post?.telegramDelivery
+      ? JSON.parse(post.telegramDelivery)
+      : null;
+    if (
+      !post ||
+      post.deletedAt ||
+      post.integration.providerIdentifier !== 'telegram' ||
+      delivery?.phase !== 'media-sent' ||
+      !delivery.mediaMessageId
+    ) {
+      throw new BadRequestException(
+        'This post has no failed Telegram text to retry.'
+      );
+    }
+    const claimed = await this._postRepository.claimTelegramRetry(
+      orgId,
+      id,
+      post.telegramDelivery!
+    );
+    if (!claimed.count)
+      throw new BadRequestException('The post is already being retried.');
+    await this.startWorkflow('telegram', id, orgId, 'QUEUE');
+    return { id, state: 'QUEUE' };
   }
 
   async changeDate(

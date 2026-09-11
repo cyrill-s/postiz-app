@@ -1,3 +1,4 @@
+import { SpoilerEntity } from '@gitroom/helpers/utils/social-formatting';
 import {
   AnalyticsData,
   AuthTokenDetails,
@@ -60,8 +61,7 @@ export class ThreadsProvider extends SocialAbstract implements SocialProvider {
     if (body.includes('4279013')) {
       return {
         type: 'bad-body',
-        value:
-          'User restricted',
+        value: 'User restricted',
       };
     }
     if (body.includes('The media could not be fetched from this URI')) {
@@ -246,7 +246,8 @@ export class ThreadsProvider extends SocialAbstract implements SocialProvider {
     media: { path: string },
     message: string,
     isCarouselItem = false,
-    replyToId?: string
+    replyToId?: string,
+    textEntities: SpoilerEntity[] = []
   ): Promise<string> {
     const mediaType = hasExtension(media.path, 'mp4')
       ? 'video_url'
@@ -258,6 +259,9 @@ export class ThreadsProvider extends SocialAbstract implements SocialProvider {
       ...(replyToId ? { reply_to_id: replyToId } : {}),
       media_type: mediaType === 'video_url' ? 'VIDEO' : 'IMAGE',
       text: message,
+      ...(textEntities.length && !isCarouselItem
+        ? { text_entities: JSON.stringify(textEntities) }
+        : {}),
       access_token: accessToken,
     });
 
@@ -278,7 +282,8 @@ export class ThreadsProvider extends SocialAbstract implements SocialProvider {
     accessToken: string,
     media: { path: string }[],
     message: string,
-    replyToId?: string
+    replyToId?: string,
+    textEntities: SpoilerEntity[] = []
   ): Promise<string> {
     // Create each media item
     const mediaIds = [];
@@ -301,6 +306,9 @@ export class ThreadsProvider extends SocialAbstract implements SocialProvider {
     // Create carousel container
     const params = new URLSearchParams({
       text: message,
+      ...(textEntities.length
+        ? { text_entities: JSON.stringify(textEntities) }
+        : {}),
       media_type: 'CAROUSEL',
       children: mediaIds.join(','),
       ...(replyToId ? { reply_to_id: replyToId } : {}),
@@ -324,11 +332,14 @@ export class ThreadsProvider extends SocialAbstract implements SocialProvider {
     accessToken: string,
     message: string,
     replyToId?: string,
-    quoteId?: string
+    quoteId?: string,
+    textEntities: SpoilerEntity[] = []
   ): Promise<string> {
     const form = new FormData();
     form.append('media_type', 'TEXT');
     form.append('text', message);
+    if (textEntities.length)
+      form.append('text_entities', JSON.stringify(textEntities));
     form.append('access_token', accessToken);
 
     if (replyToId) {
@@ -389,7 +400,8 @@ export class ThreadsProvider extends SocialAbstract implements SocialProvider {
         accessToken,
         postDetails.message,
         replyToId,
-        quoteId
+        quoteId,
+        postDetails.textEntities
       );
     } else if (postDetails.media.length === 1) {
       // Single media content
@@ -399,7 +411,8 @@ export class ThreadsProvider extends SocialAbstract implements SocialProvider {
         postDetails.media[0],
         postDetails.message,
         false,
-        replyToId
+        replyToId,
+        postDetails.textEntities
       );
     } else {
       // Carousel content
@@ -408,7 +421,8 @@ export class ThreadsProvider extends SocialAbstract implements SocialProvider {
         accessToken,
         postDetails.media,
         postDetails.message,
-        replyToId
+        replyToId,
+        postDetails.textEntities
       );
     }
   }
@@ -473,6 +487,7 @@ export class ThreadsProvider extends SocialAbstract implements SocialProvider {
             step: 'children',
             childIds,
             message: firstPost.message,
+            textEntities: firstPost.textEntities,
           },
         },
       ];
@@ -482,13 +497,22 @@ export class ThreadsProvider extends SocialAbstract implements SocialProvider {
     // threads_publish runs in finalizePost.
     const containerId =
       !firstPost.media || firstPost.media.length === 0
-        ? await this.createTextContent(userId, accessToken, firstPost.message)
+        ? await this.createTextContent(
+            userId,
+            accessToken,
+            firstPost.message,
+            undefined,
+            undefined,
+            firstPost.textEntities
+          )
         : await this.createSingleMediaContent(
             userId,
             accessToken,
             firstPost.media[0],
             firstPost.message,
-            false
+            false,
+            undefined,
+            firstPost.textEntities
           );
 
     return [
@@ -509,6 +533,7 @@ export class ThreadsProvider extends SocialAbstract implements SocialProvider {
       childIds?: string[];
       containerId?: string;
       message?: string;
+      textEntities?: SpoilerEntity[];
     },
     integration: Integration
   ): Promise<PendingCheckResponse> {
@@ -554,6 +579,7 @@ export class ThreadsProvider extends SocialAbstract implements SocialProvider {
       childIds?: string[];
       containerId?: string;
       message?: string;
+      textEntities?: SpoilerEntity[];
     },
     integration: Integration
   ): Promise<PendingCheckResponse> {
@@ -563,6 +589,9 @@ export class ThreadsProvider extends SocialAbstract implements SocialProvider {
     if (pendingData.step === 'children') {
       const params = new URLSearchParams({
         text: pendingData.message || '',
+        ...(pendingData.textEntities?.length
+          ? { text_entities: JSON.stringify(pendingData.textEntities) }
+          : {}),
         media_type: 'CAROUSEL',
         children: (pendingData.childIds || []).join(','),
         access_token: accessToken,
@@ -570,7 +599,9 @@ export class ThreadsProvider extends SocialAbstract implements SocialProvider {
 
       const { id: containerId } = await (
         await this.fetch(
-          `https://graph.threads.net/v1.0/${integration.internalId}/threads?${params.toString()}`,
+          `https://graph.threads.net/v1.0/${
+            integration.internalId
+          }/threads?${params.toString()}`,
           {
             method: 'POST',
           }
@@ -595,7 +626,11 @@ export class ThreadsProvider extends SocialAbstract implements SocialProvider {
     return {
       status: 'completed',
       postId: threadId,
-      releaseURL: await this.threadPermalink(threadId, accessToken, integration),
+      releaseURL: await this.threadPermalink(
+        threadId,
+        accessToken,
+        integration
+      ),
     };
   }
 

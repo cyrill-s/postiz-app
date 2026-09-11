@@ -1,3 +1,12 @@
+import { Context } from '@temporalio/activity';
+import {
+  PostDetails,
+  SocialProvider,
+} from '@gitroom/nestjs-libraries/integrations/social/social.integrations.interface';
+import {
+  compileSocialContent,
+  supportsSocialFormatting,
+} from '@gitroom/helpers/utils/social-formatting';
 import { Injectable } from '@nestjs/common';
 import {
   Activity,
@@ -183,26 +192,83 @@ export class PostActivity {
       lastPostId,
       integration.token,
       await Promise.all(
-        (newPosts || []).map(async (p) => ({
-          id: p.id,
-          message: stripHtmlValidation(
-            getIntegration.editor,
-            p.content,
-            true,
-            false,
-            !/<\/?[a-z][\s\S]*>/i.test(p.content),
-            getIntegration.mentionFormat
-          ),
-          settings: JSON.parse(p.settings || '{}'),
-          media: await this._postService.updateMedia(
-            p.id,
-            JSON.parse(p.image || '[]'),
-            getIntegration?.convertToJPEG || false
-          ),
-        }))
+        (newPosts || []).map((p) =>
+          this.preparePost(integration, getIntegration, p, true)
+        )
       ),
       integration
     );
+  }
+
+  private async preparePost(
+    integration: Integration,
+    provider: SocialProvider,
+    post: Post,
+    comment = false
+  ): Promise<PostDetails> {
+    const compiled = supportsSocialFormatting(integration.providerIdentifier)
+      ? compileSocialContent(
+          integration.providerIdentifier,
+          post.content,
+          provider.mentionFormat
+        )
+      : undefined;
+    return {
+      id: post.id,
+      ...(compiled
+        ? { sourceHtml: post.content, textEntities: compiled.textEntities }
+        : {}),
+      message: compiled
+        ? compiled.message
+        : stripHtmlValidation(
+            provider.editor,
+            post.content,
+            true,
+            false,
+            !/<\/?[a-z][\s\S]*>/i.test(post.content),
+            provider.mentionFormat
+          ),
+      settings: {
+        ...JSON.parse(post.settings || '{}'),
+        ...(comment && integration.providerIdentifier === 'telegram'
+          ? { separateText: false }
+          : {}),
+      },
+      media: await this._postService.updateMedia(
+        post.id,
+        JSON.parse(post.image || '[]'),
+        provider.convertToJPEG || false
+      ),
+      ...(integration.providerIdentifier === 'telegram'
+        ? {
+            telegramDelivery: {
+              load: async () => {
+                const saved = await this._postService.getTelegramDelivery(
+                  integration.organizationId,
+                  post.id
+                );
+                // Recurring publications reuse the post ID. A new occurrence may start
+                // afresh after completion; activity retries and partial retries may not.
+                return saved?.phase === 'completed' &&
+                  post.state === 'PUBLISHED' &&
+                  saved.executionId !==
+                    Context.current().info.workflowExecution.runId
+                  ? null
+                  : saved;
+              },
+              save: (state) =>
+                this._postService.saveTelegramDelivery(
+                  integration.organizationId,
+                  post.id,
+                  {
+                    ...state,
+                    executionId: Context.current().info.workflowExecution.runId,
+                  }
+                ),
+            },
+          }
+        : {}),
+    };
   }
 
   @ActivityMethod()
@@ -244,23 +310,9 @@ export class PostActivity {
     );
 
     const mappedPosts = await Promise.all(
-      (newPosts || []).map(async (p) => ({
-        id: p.id,
-        message: stripHtmlValidation(
-          getIntegration.editor,
-          p.content,
-          true,
-          false,
-          !/<\/?[a-z][\s\S]*>/i.test(p.content),
-          getIntegration.mentionFormat
-        ),
-        settings: JSON.parse(p.settings || '{}'),
-        media: await this._postService.updateMedia(
-          p.id,
-          JSON.parse(p.image || '[]'),
-          getIntegration?.convertToJPEG || false
-        ),
-      }))
+      (newPosts || []).map((p) =>
+        this.preparePost(integration, getIntegration, p)
+      )
     );
 
     const postNow =

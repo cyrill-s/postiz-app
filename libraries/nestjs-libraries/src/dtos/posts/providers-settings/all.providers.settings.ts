@@ -1,3 +1,4 @@
+import { TelegramSettingsDto } from './telegram.dto';
 import { RedditSettingsDto } from '@gitroom/nestjs-libraries/dtos/posts/providers-settings/reddit.dto';
 import { PinterestSettingsDto } from '@gitroom/nestjs-libraries/dtos/posts/providers-settings/pinterest.dto';
 import { YoutubeSettingsDto } from '@gitroom/nestjs-libraries/dtos/posts/providers-settings/youtube.settings.dto';
@@ -54,7 +55,7 @@ export type AllProvidersSettings =
   | ProviderExtension<'threads', None>
   | ProviderExtension<'mastodon', None>
   | ProviderExtension<'bluesky', None>
-  | ProviderExtension<'telegram', None>
+  | ProviderExtension<'telegram', TelegramSettingsDto>
   | ProviderExtension<'max', None>
   | ProviderExtension<'nostr', None>
   | ProviderExtension<'moltbook', MoltbookDto>
@@ -70,6 +71,7 @@ type None = NonNullable<unknown>;
 
 export const allProviders = (setEmpty?: any) => {
   return [
+    { value: TelegramSettingsDto, name: 'telegram' },
     { value: RedditSettingsDto, name: 'reddit' },
     { value: LemmySettingsDto, name: 'lemmy' },
     { value: YoutubeSettingsDto, name: 'youtube' },
@@ -96,7 +98,6 @@ export const allProviders = (setEmpty?: any) => {
     { value: setEmpty, name: 'threads' },
     { value: setEmpty, name: 'mastodon' },
     { value: setEmpty, name: 'bluesky' },
-    { value: setEmpty, name: 'telegram' },
     { value: setEmpty, name: 'max' },
     { value: setEmpty, name: 'nostr' },
     { value: setEmpty, name: 'vk' },

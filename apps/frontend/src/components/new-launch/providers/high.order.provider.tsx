@@ -1,4 +1,5 @@
 'use client';
+import { supportsSocialFormatting } from '@gitroom/helpers/utils/social-formatting';
 
 import React, {
   FC,
@@ -124,14 +125,18 @@ export const withProvider = function <T extends object>(params: {
         setComments(true);
         setPostComment(PostComment.ALL);
         setTotalChars(0);
-        setEditor('normal');
+        setEditor('html');
       }
 
       if (current) {
         setComments(
           typeof params.comments === 'undefined' ? true : params.comments
         );
-        setEditor(selectedIntegration?.integration.editor);
+        setEditor(
+          supportsSocialFormatting(selectedIntegration?.integration.identifier)
+            ? 'html'
+            : selectedIntegration?.integration.editor
+        );
         setPostComment(postComment);
         setTotalChars(
           typeof maximumCharacters === 'number'

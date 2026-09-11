@@ -39,6 +39,15 @@ export class PostsController {
     private _shortLinkService: ShortLinkService
   ) {}
 
+  @Post('/:id/retry-telegram-text')
+  @CheckPolicies([AuthorizationActions.Create, Sections.POSTS_PER_MONTH])
+  async retryTelegramText(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string
+  ) {
+    return this._postsService.retryTelegramText(org.id, id);
+  }
+
   @Get('/:id/statistics')
   async getStatistics(
     @GetOrgFromRequest() org: Organization,

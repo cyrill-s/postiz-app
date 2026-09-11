@@ -11,7 +11,9 @@ import { SocialAbstract } from '@gitroom/nestjs-libraries/integrations/social.ab
 import mime from 'mime';
 import TelegramBot from 'node-telegram-bot-api';
 import { Integration } from '@prisma/client';
-import striptags from 'striptags';
+import { compileSocialContent } from '@gitroom/helpers/utils/social-formatting';
+import { BadBody } from '../social.abstract';
+import { TelegramSettingsDto } from '../../dtos/posts/providers-settings/telegram.dto';
 
 const telegramBot = new TelegramBot(process.env.TELEGRAM_TOKEN!);
 // Added to support local storage posting
@@ -26,6 +28,7 @@ export class TelegramProvider extends SocialAbstract implements SocialProvider {
   isWeb3 = true;
   scopes = [] as string[];
   editor = 'html' as const;
+  dto = TelegramSettingsDto;
   maxLength() {
     return 4096;
   }
@@ -175,12 +178,19 @@ export class TelegramProvider extends SocialAbstract implements SocialProvider {
   ): Promise<number | null> {
     let messageId: number | null = null;
     const mediaFiles = message.media || [];
-    const text = striptags(message.message || '', ['u', 'strong', 'p'])
-      .replace(/<strong>/g, '<b>')
-      .replace(/<\/strong>/g, '</b>')
-      .replace(/<p>(.*?)<\/p>/g, '$1\n');
-
-    console.log(text);
+    const compiled = compileSocialContent(
+      'telegram',
+      message.sourceHtml ?? message.message ?? ''
+    );
+    const text = compiled.message;
+    const limit = mediaFiles.length ? 1024 : 4096;
+    if (compiled.length > limit)
+      throw new BadBody(
+        this.identifier,
+        '{}',
+        '{}',
+        `Telegram text exceeds ${limit} characters.`
+      );
     const processedMedia = this.processMedia(mediaFiles);
 
     // if there's no media, bot sends a text message only
@@ -251,6 +261,122 @@ export class TelegramProvider extends SocialAbstract implements SocialProvider {
     return messageId;
   }
 
+  private async deliver(
+    accessToken: string,
+    post: PostDetails,
+    replyToId?: number
+  ): Promise<number | null> {
+    const checkpoint = await post.telegramDelivery?.load();
+    if (checkpoint?.chatId && checkpoint.chatId !== accessToken)
+      throw new BadBody(
+        this.identifier,
+        '{}',
+        '{}',
+        'The Telegram destination changed. Create a new post.'
+      );
+    const separate =
+      post.settings?.separateText === true &&
+      !!post.media?.length &&
+      !!compileSocialContent('telegram', post.sourceHtml ?? post.message).text;
+    if (!separate && !checkpoint)
+      return this.sendMessage(accessToken, post, replyToId);
+    if (!post.telegramDelivery)
+      throw new BadBody(
+        this.identifier,
+        '{}',
+        '{}',
+        'Telegram split delivery requires persistent progress.'
+      );
+    const compiled = compileSocialContent(
+      'telegram',
+      post.sourceHtml ?? post.message
+    );
+    if (compiled.length > 4096)
+      throw new BadBody(
+        this.identifier,
+        '{}',
+        '{}',
+        'Telegram text exceeds 4096 characters. Shorten the text.'
+      );
+    if (checkpoint?.phase === 'completed') return checkpoint.textMessageId!;
+    if (
+      checkpoint?.phase === 'sending-media' ||
+      checkpoint?.phase === 'sending-text'
+    ) {
+      throw new BadBody(
+        this.identifier,
+        '{}',
+        '{}',
+        'Telegram delivery could not be confirmed. Check the channel before retrying.'
+      );
+    }
+    let mediaMessageId = checkpoint?.mediaMessageId;
+    if (!mediaMessageId) {
+      await post.telegramDelivery.save({
+        chatId: accessToken,
+        phase: 'sending-media',
+      });
+      try {
+        mediaMessageId = (await this.sendMessage(
+          accessToken,
+          { ...post, message: '', sourceHtml: '' },
+          replyToId
+        ))!;
+      } catch (error) {
+        // Only an explicit API rejection proves the operation did not publish.
+        // Unknown outcomes stay checkpointed and must not duplicate media.
+        throw new BadBody(
+          this.identifier,
+          '{}',
+          '{}',
+          'Telegram media delivery could not be confirmed. Check the channel.'
+        );
+      }
+      await post.telegramDelivery.save({
+        chatId: accessToken,
+        phase: 'media-sent',
+        mediaMessageId,
+      });
+    }
+    await post.telegramDelivery.save({
+      chatId: accessToken,
+      phase: 'sending-text',
+      mediaMessageId,
+    });
+    let textMessageId: number;
+    try {
+      textMessageId = (await this.sendMessage(accessToken, {
+        ...post,
+        media: [],
+      }))!;
+    } catch (error) {
+      const rejected =
+        (error as { response?: { body?: { ok?: boolean } } })?.response?.body
+          ?.ok === false;
+      if (rejected)
+        await post.telegramDelivery.save({
+          chatId: accessToken,
+          phase: 'media-sent',
+          mediaMessageId,
+        });
+      throw new BadBody(
+        this.identifier,
+        '{}',
+        '{}',
+        rejected
+          ? 'Published partially: media was sent. Retry only the text.'
+          : 'Published partially: media was sent; text delivery is unconfirmed. Check the channel.'
+      );
+    }
+    await post.telegramDelivery.save({
+      chatId: accessToken,
+      phase: 'completed',
+      mediaMessageId,
+      textMessageId,
+    });
+    return textMessageId;
+  }
+
   async post(
     id: string,
     accessToken: string,
@@ -258,7 +384,7 @@ export class TelegramProvider extends SocialAbstract implements SocialProvider {
   ): Promise<PostResponse[]> {
     const [firstPost] = postDetails;
 
-    const messageId = await this.sendMessage(accessToken, firstPost);
+    const messageId = await this.deliver(accessToken, firstPost);
 
     // for private groups/channels message.id is undefined so the link generated by Postiz will be unusable "https://t.me/c/undefined/16"
     // to avoid that, we use accessToken instead of message.id and we generate the link manually removing the -100 from the start.
@@ -289,7 +415,7 @@ export class TelegramProvider extends SocialAbstract implements SocialProvider {
     const [commentPost] = postDetails;
     const replyToId = Number(lastCommentId || postId);
 
-    const messageId = await this.sendMessage(accessToken, commentPost, replyToId);
+    const messageId = await this.deliver(accessToken, commentPost, replyToId);
 
     if (messageId) {
       return [

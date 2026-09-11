@@ -404,6 +404,7 @@ model Post {
   parentPostId               String?
   releaseId                  String?
   releaseURL                 String?
+  telegramDelivery           String?
   settings                   String?
   image                      String?
   submittedForOrderId        String?

@@ -32,7 +32,7 @@ export interface IAuthenticator {
     integrationId: string,
     accessToken: string,
     postId: string,
-    fromDate: number,
+    fromDate: number
   ): Promise<AnalyticsData[]>;
   changeNickname?(
     id: string,
@@ -55,7 +55,6 @@ export interface AnalyticsData {
   data: Array<{ total: string; date: string }>;
   percentageChange: number;
 }
-
 
 export type GenerateAuthUrlResponse = {
   url: string;
@@ -131,6 +130,12 @@ export type PendingCheckResponse =
   | { status: 'completed'; postId: string; releaseURL: string };
 
 export type PostDetails<T = any> = {
+  sourceHtml?: string;
+  textEntities?: import('@gitroom/helpers/utils/social-formatting').SpoilerEntity[];
+  telegramDelivery?: {
+    load: () => Promise<TelegramDeliveryState | null>;
+    save: (state: TelegramDeliveryState) => Promise<void>;
+  };
   id: string;
   message: string;
   settings: T;
@@ -221,3 +226,11 @@ export interface SocialProvider
     data: any
   ): Promise<FetchPageInformationResult>;
 }
+
+export type TelegramDeliveryState = {
+  executionId?: string;
+  chatId?: string;
+  phase: 'sending-media' | 'media-sent' | 'sending-text' | 'completed';
+  mediaMessageId?: number;
+  textMessageId?: number;
+};

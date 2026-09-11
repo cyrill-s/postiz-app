@@ -1,4 +1,5 @@
 'use client';
+import { TelegramDeliveryStatus } from './telegram-delivery-status';
 
 import React, {
   FC,
@@ -1042,6 +1043,7 @@ const CalendarItem: FC<{
         opacity,
       }}
     >
+      <TelegramDeliveryStatus id={post.id} delivery={post.telegramDelivery} state={state} />
       {state === 'ERROR' && (
         <div
           className="absolute -top-[6px] -left-[6px] z-20 w-[18px] h-[18px] rounded-full bg-red-500 flex items-center justify-center text-white text-[11px] font-bold cursor-pointer"

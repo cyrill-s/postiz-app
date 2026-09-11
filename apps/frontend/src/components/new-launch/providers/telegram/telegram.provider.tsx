@@ -1,4 +1,5 @@
 'use client';
+import { TelegramSettingsDto } from '@gitroom/nestjs-libraries/dtos/posts/providers-settings/telegram.dto';
 
 import {
   PostComment,
@@ -9,6 +10,6 @@ export default withProvider({
   minimumCharacters: [],
   SettingsComponent: null,
   CustomPreviewComponent: undefined,
-  dto: undefined,
+  dto: TelegramSettingsDto,
   maximumCharacters: 4096,
 });

@@ -1,3 +1,4 @@
+import { compileSocialContent } from '@gitroom/helpers/utils/social-formatting';
 import { AuthService } from '@gitroom/helpers/auth/auth.service';
 import { timer } from '@gitroom/helpers/utils/timer';
 import { getSsrfSafeDispatcher } from '@gitroom/nestjs-libraries/dtos/webhooks/ssrf.safe.dispatcher';
@@ -312,7 +313,11 @@ export class MaxProvider extends SocialAbstract implements SocialProvider {
     );
     if (validity !== true) this.fail(validity);
     const post = posts[0];
-    if (post.message.length > this.maxLength())
+    if (
+      (post.sourceHtml !== undefined
+        ? compileSocialContent('max', post.sourceHtml).length
+        : post.message.length) > this.maxLength()
+    )
       this.fail('MAX: не более 4000 символов в публикации.');
     if (!post.message.trim() && !post.media?.length)
       this.fail('Добавьте текст или медиафайл для MAX.');
@@ -323,6 +328,7 @@ export class MaxProvider extends SocialAbstract implements SocialProvider {
       message?: { body?: { mid?: string }; url?: string };
     }>(`/messages?chat_id=${credentials.chatId}`, credentials.token, {
       text: post.message || null,
+      ...(post.sourceHtml !== undefined ? { format: 'html' } : {}),
       ...(attachments.length ? { attachments } : {}),
     });
     if (!result.message?.body?.mid)
