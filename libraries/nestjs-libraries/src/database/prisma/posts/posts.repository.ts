@@ -419,6 +419,20 @@ export class PostsRepository {
     });
   }
 
+  restoreTelegramRetry(orgId: string, id: string, delivery: string) {
+    // Do not overwrite progress if an ambiguous dispatch actually started.
+    return this._post.model.post.updateMany({
+      where: {
+        id,
+        organizationId: orgId,
+        state: 'QUEUE',
+        telegramDelivery: delivery,
+        deletedAt: null,
+      },
+      data: { state: 'ERROR' },
+    });
+  }
+
   updatePost(id: string, postId: string, releaseURL: string) {
     return this._post.model.post.update({
       where: {

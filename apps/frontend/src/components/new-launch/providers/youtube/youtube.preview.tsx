@@ -1,4 +1,4 @@
-import { compileSocialContent } from '@gitroom/helpers/utils/social-formatting';
+import { FormattedPreview } from '@gitroom/frontend/components/launches/formatted-preview.component';
 import { FC } from 'react';
 import { useIntegration } from '@gitroom/frontend/components/launches/helpers/use.integration';
 import { useLaunchStore } from '@gitroom/frontend/components/new-launch/store';
@@ -15,7 +15,6 @@ export const YoutubePreview: FC<{
   const mediaDir = useMediaDirectory();
 
   const renderContent = topValue.map((p) => ({
-    text: compileSocialContent('youtube', p.content).previewHtml,
     images: p.image,
   }));
 
@@ -113,10 +112,9 @@ export const YoutubePreview: FC<{
           </div>
         </div>
       </div>
-      <div
-        className="bg-youtubeBgAction rounded-[12px] p-[12px] text-[12px] font-[400] whitespace-pre-line"
-        dangerouslySetInnerHTML={{ __html: renderContent?.[0]?.text }}
-      />
+      <div className="bg-youtubeBgAction rounded-[12px] text-[12px] font-[400] overflow-y-auto">
+        <FormattedPreview platform="youtube" showMedia={false} />
+      </div>
     </div>
   );
 };

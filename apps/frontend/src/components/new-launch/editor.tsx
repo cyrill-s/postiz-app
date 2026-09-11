@@ -758,7 +758,12 @@ export const Editor: FC<{
                     <InformationComponent
                       isPicture={pictures?.length > 0}
                       chars={chars}
-                      totalChars={valueWithoutHtml.length}
+                      totalChars={
+                        supportsSocialFormatting(identifier)
+                          ? compileSocialContent(identifier, props.value || '')
+                              .length
+                          : valueWithoutHtml.length
+                      }
                       totalAllowedChars={props.totalChars}
                       text={valueWithoutHtml}
                     />

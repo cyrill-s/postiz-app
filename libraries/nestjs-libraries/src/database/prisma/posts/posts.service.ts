@@ -730,7 +730,7 @@ export class PostsService {
     }
 
     try {
-      await this._temporalService.client
+      const handle = await this._temporalService.client
         .getRawClient()
         ?.workflow.start('postWorkflowV106', {
           workflowId: `post_${postId}`,
@@ -754,7 +754,10 @@ export class PostsService {
             },
           ]),
         });
-    } catch (err) {}
+      return !!handle;
+    } catch (err) {
+      return false;
+    }
   }
 
   /**
@@ -1057,7 +1060,17 @@ export class PostsService {
     );
     if (!claimed.count)
       throw new BadRequestException('The post is already being retried.');
-    await this.startWorkflow('telegram', id, orgId, 'QUEUE');
+    const started = await this.startWorkflow('telegram', id, orgId, 'QUEUE');
+    if (!started) {
+      await this._postRepository.restoreTelegramRetry(
+        orgId,
+        id,
+        post.telegramDelivery!
+      );
+      throw new BadRequestException(
+        'Could not start the text retry. Please try again.'
+      );
+    }
     return { id, state: 'QUEUE' };
   }
 

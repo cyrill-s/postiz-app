@@ -14,9 +14,11 @@ import { useFormContext } from 'react-hook-form';
 export function FormattedPreview({
   platform,
   maximumCharacters = 1000000,
+  showMedia = true,
 }: {
   platform: string;
   maximumCharacters?: number;
+  showMedia?: boolean;
 }) {
   const { value, integration } = useIntegration();
   const form = useFormContext();
@@ -40,17 +42,18 @@ export function FormattedPreview({
         );
         const split =
           separateText && index === 0 && hasMedia && !!compiled.text;
-        const media = hasMedia ? (
-          <div className="grid grid-cols-2 gap-2">
-            {post.image!.map((image) => (
-              <VideoOrImage
-                key={image.id || image.path}
-                autoplay={false}
-                src={mediaDir.set(image.path)}
-              />
-            ))}
-          </div>
-        ) : null;
+        const media =
+          hasMedia && showMedia ? (
+            <div className="grid grid-cols-2 gap-2">
+              {post.image!.map((image) => (
+                <VideoOrImage
+                  key={image.id || image.path}
+                  autoplay={false}
+                  src={mediaDir.set(image.path)}
+                />
+              ))}
+            </div>
+          ) : null;
         const text = (
           <div
             className="social-formatted-preview whitespace-pre-wrap break-words"
