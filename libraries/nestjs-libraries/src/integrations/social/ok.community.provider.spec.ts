@@ -115,7 +115,7 @@ describe('OK community channels', () => {
   it('uploads a group photo without album commit, then publishes its token', async () => {
     reply(true);
     mock.mockResolvedValueOnce(new Response(png));
-    reply({ upload_url: 'https://upload.ok.ru/photos', photo_ids: ['photo1'] });
+    reply({ upload_url: 'https://iugp.okcdn.ru/photos', photo_ids: ['photo1'] });
     reply({ photos: { photo1: { token: 'photo-token' } } });
     reply('111');
     await provider.post(`ok-community:${credentials.groupId}`, encrypted, [{ ...post, media: [{ path: 'https://poster.generationl.ru/uploads/a.png', type: 'image' }] }]);

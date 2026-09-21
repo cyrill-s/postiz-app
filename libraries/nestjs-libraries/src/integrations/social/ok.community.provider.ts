@@ -323,7 +323,7 @@ export class OkCommunityProvider
       target.protocol !== 'https:' ||
       target.username ||
       target.password ||
-      !['ok.ru', 'mycdn.me', 'odnoklassniki.ru'].some(
+      !['ok.ru', 'okcdn.ru', 'mycdn.me', 'odnoklassniki.ru'].some(
         (host) =>
           target.hostname === host || target.hostname.endsWith(`.${host}`)
       )
