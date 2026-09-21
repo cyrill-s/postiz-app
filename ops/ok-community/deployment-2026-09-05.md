@@ -122,3 +122,33 @@ After rollout the original preview URL returns HTTP 200; rendered HTML contains
 the group's name and all 654 characters of post text (after whitespace/markup
 normalization). Container healthy, memory about 1.2 GiB/3 GiB, cgroup OOM events zero.
 HTML sanitization remains enabled. No public posts were modified or sent.
+
+## 2026-09-21: OK photo upload host
+
+Production photo attempts reproduced a provider rejection before upload because
+`photosV2.getUploadUrl` returned `iugp.okcdn.ru`, while the SSRF allowlist did
+not include OK's `okcdn.ru` domain. The allowlist now accepts `okcdn.ru` and its
+subdomains while retaining HTTPS, credential and domain-boundary checks. The
+successful upload test uses the production hostname and failed before the fix.
+
+Source: `f25f82a`. Image: `local/postiz:v2.23.0-ok-photo-2`. Release:
+`/opt/postiz-next/releases/ok-photo-2`. The image is a narrow runtime overlay on
+the previous `local/postiz:v2.23.0-juls-4a95ff7` production image, replacing the
+compiled OK provider in backend and orchestrator only. The first full-base
+package attempt was rolled back before validation because the older packaging
+script omitted unrelated runtime dependencies; production was restored healthy
+before the narrow overlay was deployed.
+
+All 28 OK/queue/create-validation tests pass; backend and orchestrator production
+builds pass. The deployed backend and orchestrator provider modules load under
+512 MiB / 0.5 CPU. A read-only live `photosV2.getUploadUrl` check returned
+`iugp.okcdn.ru`, accepted by the deployed rule. No image was uploaded and no
+public post was created or retried.
+
+The final container is healthy with restart count 0 and no OOM event. `/auth`,
+`/api/integrations`, and `jsia.ru/health` return 200; the `ok` Temporal queue is
+RUNNING. App limits remain 3 GiB RAM/swap, 1.25 CPUs, CPU shares 128, OOM score
+700 and pids 1024. The base compose checksum and all unrelated container IDs and
+start times are unchanged. Rollback restores
+`/opt/postiz-next/releases/previous-ok-photo-compose.override.yaml` as
+`docker-compose.vk-community.yaml` and recreates only `app`.
