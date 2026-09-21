@@ -1,8 +1,8 @@
+import { randomBytes } from 'crypto';
 import { HttpException, HttpStatus, Injectable } from '@nestjs/common';
 import { OAuthRepository } from '@gitroom/nestjs-libraries/database/prisma/oauth/oauth.repository';
 import { CreateOAuthAppDto } from '@gitroom/nestjs-libraries/dtos/oauth/create-oauth-app.dto';
 import { UpdateOAuthAppDto } from '@gitroom/nestjs-libraries/dtos/oauth/update-oauth-app.dto';
-import { makeId } from '@gitroom/nestjs-libraries/services/make.is';
 import { AuthService } from '@gitroom/helpers/auth/auth.service';
 
 @Injectable()
@@ -25,8 +25,8 @@ export class OAuthService {
       );
     }
 
-    const clientId = 'pca_' + makeId(32);
-    const clientSecret = 'pcs_' + makeId(48);
+    const clientId = 'pca_' + randomBytes(24).toString('hex');
+    const clientSecret = 'pcs_' + randomBytes(32).toString('hex');
     const encryptedSecret = AuthService.fixedEncryption(clientSecret);
 
     const app = await this._oauthRepository.createApp(orgId, {
@@ -66,7 +66,7 @@ export class OAuthService {
       throw new HttpException('No OAuth app found', HttpStatus.NOT_FOUND);
     }
 
-    const newSecret = 'pcs_' + makeId(48);
+    const newSecret = 'pcs_' + randomBytes(32).toString('hex');
     const encrypted = AuthService.fixedEncryption(newSecret);
     await this._oauthRepository.updateClientSecret(orgId, encrypted);
     return { clientSecret: newSecret };
@@ -85,7 +85,7 @@ export class OAuthService {
     userId: string,
     organizationId: string
   ) {
-    const code = makeId(32);
+    const code = randomBytes(32).toString('base64url');
     const encryptedCode = AuthService.fixedEncryption(code);
     const codeExpiresAt = new Date(Date.now() + 10 * 60 * 1000);
 
@@ -120,6 +120,22 @@ export class OAuthService {
       );
     }
 
+    const token = 'pos_' + randomBytes(32).toString('base64url');
+    const encryptedToken = AuthService.fixedEncryption(token);
+    const managed = await this._oauthRepository.exchangeJulsCode(
+      code,
+      app.id,
+      encryptedToken
+    );
+    if (managed) {
+      return {
+        id: managed.organizationId,
+        cus: managed.organization.paymentId,
+        access_token: AuthService.fixedDecryption(managed.accessToken),
+        token_type: 'bearer',
+      };
+    }
+
     const encryptedCode = AuthService.fixedEncryption(code);
     const auth = await this._oauthRepository.findByCode(encryptedCode);
     if (!auth || auth.oauthAppId !== app.id) {
@@ -136,15 +152,20 @@ export class OAuthService {
       );
     }
 
-    const token = 'pos_' + makeId(40);
-    const encryptedToken = AuthService.fixedEncryption(token);
+    const exchanged = await this._oauthRepository.exchangeCodeForToken(
+      auth.id,
+      encryptedCode,
+      encryptedToken
+    );
+    if (!exchanged)
+      throw new HttpException(
+        { error: 'invalid_grant' },
+        HttpStatus.BAD_REQUEST
+      );
     const {
       organizationId,
       organization: { paymentId },
-    } = await this._oauthRepository.exchangeCodeForToken(
-      auth.id,
-      encryptedToken
-    );
+    } = exchanged;
 
     return {
       id: organizationId,

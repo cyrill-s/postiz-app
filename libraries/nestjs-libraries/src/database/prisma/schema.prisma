@@ -43,6 +43,7 @@ model Organization {
   webhooks            Webhooks[]
   oauthApp            OAuthApp[]
   oauthAuthorizations OAuthAuthorization[]
+  julsWorkspace       JulsWorkspace?
 
   @@index([apiKey])
   @@index([streakSince])
@@ -113,6 +114,7 @@ model User {
   sendFailureEmails     Boolean              @default(true)
   sendStreakEmails      Boolean              @default(true)
   oauthAuthorizations   OAuthAuthorization[]
+  julsWorkspace         JulsWorkspace?
 
   @@unique([email, providerName])
   @@index([lastReadNotifications])
@@ -866,19 +868,20 @@ model OAuthApp {
 }
 
 model OAuthAuthorization {
-  id                String       @id @default(uuid())
-  oauthAppId        String
-  userId            String
-  organizationId    String
-  accessToken       String?
-  authorizationCode String?
-  codeExpiresAt     DateTime?
-  revokedAt         DateTime?
-  createdAt         DateTime     @default(now())
-  updatedAt         DateTime     @updatedAt
-  oauthApp          OAuthApp     @relation(fields: [oauthAppId], references: [id])
-  user              User         @relation(fields: [userId], references: [id])
-  organization      Organization @relation(fields: [organizationId], references: [id])
+  id                 String              @id @default(uuid())
+  oauthAppId         String
+  userId             String
+  organizationId     String
+  accessToken        String?
+  authorizationCode  String?
+  codeExpiresAt      DateTime?
+  revokedAt          DateTime?
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+  julsBootstrapCodes JulsBootstrapCode[]
+  oauthApp           OAuthApp            @relation(fields: [oauthAppId], references: [id])
+  user               User                @relation(fields: [userId], references: [id])
+  organization       Organization        @relation(fields: [organizationId], references: [id])
 
   @@unique([oauthAppId, userId, organizationId])
   @@index([accessToken])
@@ -927,6 +930,7 @@ enum Provider {
   FARCASTER
   WALLET
   GENERIC
+  JULS
 }
 
 enum Role {
@@ -968,4 +972,71 @@ model Announcement {
   description String
   color       AnnouncementColor @default(INFO)
   createdAt   DateTime          @default(now())
+}
+
+// Terminal tombstones may exist before an organization has been provisioned.
+model JulsWorkspace {
+  id                  String              @id @default(uuid())
+  issuer              String
+  externalWorkspaceId String
+  externalOwnerId     String?
+  organizationId      String?             @unique
+  userId              String?             @unique
+  oauthAppId          String?
+  revokedAt           DateTime?
+  createdAt           DateTime            @default(now())
+  organization        Organization?       @relation(fields: [organizationId], references: [id])
+  user                User?               @relation(fields: [userId], references: [id])
+  bootstrapCodes      JulsBootstrapCode[]
+  handoffs            JulsHandoff[]
+  events              JulsAuditEvent[]
+
+  @@unique([issuer, externalWorkspaceId])
+}
+
+model JulsBootstrapCode {
+  id              String             @id @default(uuid())
+  workspaceId     String
+  authorizationId String
+  requestId       String
+  requestDigest   String
+  codeDigest      String             @unique
+  encryptedCode   String
+  expiresAt       DateTime
+  consumedAt      DateTime?
+  createdAt       DateTime           @default(now())
+  workspace       JulsWorkspace      @relation(fields: [workspaceId], references: [id])
+  authorization   OAuthAuthorization @relation(fields: [authorizationId], references: [id])
+
+  @@unique([workspaceId, requestId])
+  @@index([expiresAt])
+}
+
+model JulsHandoff {
+  ticketDigest String        @id
+  workspaceId  String
+  actorId      String
+  expiresAt    DateTime
+  consumedAt   DateTime?
+  workspace    JulsWorkspace @relation(fields: [workspaceId], references: [id])
+
+  @@index([expiresAt])
+}
+
+model JulsRequestNonce {
+  nonce     String   @id
+  expiresAt DateTime
+
+  @@index([expiresAt])
+}
+
+model JulsAuditEvent {
+  id          String        @id @default(uuid())
+  workspaceId String
+  action      String
+  actorId     String?
+  createdAt   DateTime      @default(now())
+  workspace   JulsWorkspace @relation(fields: [workspaceId], references: [id])
+
+  @@index([workspaceId, createdAt])
 }

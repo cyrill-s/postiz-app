@@ -1,11 +1,16 @@
+import { createHash } from 'crypto';
 import { Injectable } from '@nestjs/common';
-import { PrismaRepository } from '@gitroom/nestjs-libraries/database/prisma/prisma.service';
+import {
+  PrismaRepository,
+  PrismaTransaction,
+} from '@gitroom/nestjs-libraries/database/prisma/prisma.service';
 
 @Injectable()
 export class OAuthRepository {
   constructor(
     private _oauthApp: PrismaRepository<'oAuthApp'>,
-    private _oauthAuth: PrismaRepository<'oAuthAuthorization'>
+    private _oauthAuth: PrismaRepository<'oAuthAuthorization'>,
+    private transaction: PrismaTransaction
   ) {}
 
   getAppByOrgId(orgId: string) {
@@ -162,22 +167,100 @@ export class OAuthRepository {
     });
   }
 
-  exchangeCodeForToken(id: string, encryptedToken: string) {
-    return this._oauthAuth.model.oAuthAuthorization.update({
-      where: { id },
-      select: {
-        organizationId: true,
-        organization: {
-          select: {
-            paymentId: true,
-          }
-        }
-      },
-      data: {
-        accessToken: encryptedToken,
-        authorizationCode: null,
-        codeExpiresAt: null,
-      },
+  async exchangeCodeForToken(
+    id: string,
+    encryptedCode: string,
+    encryptedToken: string
+  ) {
+    return this.transaction.model.$transaction(async (tx) => {
+      const consumed = await tx.oAuthAuthorization.updateMany({
+        where: {
+          id,
+          authorizationCode: encryptedCode,
+          codeExpiresAt: { gt: new Date() },
+          revokedAt: null,
+        },
+        data: {
+          accessToken: encryptedToken,
+          authorizationCode: null,
+          codeExpiresAt: null,
+        },
+      });
+      if (!consumed.count) return null;
+      return tx.oAuthAuthorization.findUnique({
+        where: { id },
+        select: {
+          organizationId: true,
+          organization: { select: { paymentId: true } },
+        },
+      });
+    });
+  }
+
+  async exchangeJulsCode(
+    code: string,
+    oauthAppId: string,
+    candidateToken: string
+  ) {
+    return this.transaction.model.$transaction(async (tx) => {
+      const challenge = await tx.julsBootstrapCode.findUnique({
+        where: { codeDigest: createHash('sha256').update(code).digest('hex') },
+        include: { workspace: true },
+      });
+      if (!challenge || challenge.workspace.oauthAppId !== oauthAppId)
+        return null;
+      const { issuer, externalWorkspaceId } = challenge.workspace;
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${JSON.stringify(
+        [issuer, externalWorkspaceId]
+      )}, 0))`;
+      const workspace = await tx.julsWorkspace.findUnique({
+        where: { id: challenge.workspaceId },
+      });
+      if (workspace.revokedAt) return null;
+      // Lock the grant against normal revocation as well as parallel exchanges.
+      await tx.$queryRaw`SELECT "id" FROM "OAuthAuthorization" WHERE "id" = ${challenge.authorizationId} FOR UPDATE`;
+      const authorization = await tx.oAuthAuthorization.findFirst({
+        where: {
+          id: challenge.authorizationId,
+          oauthAppId,
+          revokedAt: null,
+          oauthApp: { deletedAt: null },
+          user: { activated: true },
+        },
+        include: { organization: { select: { paymentId: true } } },
+      });
+      if (!authorization) return null;
+      const membership = await tx.userOrganization.findFirst({
+        where: {
+          userId: workspace.userId,
+          organizationId: workspace.organizationId,
+          disabled: false,
+        },
+      });
+      if (!membership) return null;
+      const consumed = await tx.julsBootstrapCode.updateMany({
+        where: {
+          id: challenge.id,
+          consumedAt: null,
+          expiresAt: { gt: new Date() },
+        },
+        data: { consumedAt: new Date() },
+      });
+      if (!consumed.count) return null;
+      const accessToken = authorization.accessToken || candidateToken;
+      if (!authorization.accessToken)
+        await tx.oAuthAuthorization.update({
+          where: { id: authorization.id },
+          data: { accessToken },
+        });
+      await tx.julsAuditEvent.create({
+        data: { workspaceId: workspace.id, action: 'bootstrap_exchanged' },
+      });
+      return {
+        organizationId: workspace.organizationId,
+        accessToken,
+        organization: authorization.organization,
+      };
     });
   }
 
@@ -186,6 +269,14 @@ export class OAuthRepository {
       where: {
         accessToken: encryptedToken,
         revokedAt: null,
+        oauthApp: { deletedAt: null },
+        user: { activated: true },
+        organization: {
+          OR: [
+            { julsWorkspace: { is: null } },
+            { julsWorkspace: { is: { revokedAt: null } } },
+          ],
+        },
       },
       include: {
         organization: {

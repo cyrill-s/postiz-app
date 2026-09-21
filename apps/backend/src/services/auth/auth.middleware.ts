@@ -6,7 +6,7 @@ import { OrganizationService } from '@gitroom/nestjs-libraries/database/prisma/o
 import { UsersService } from '@gitroom/nestjs-libraries/database/prisma/users/users.service';
 import { getCookieUrlFromDomain } from '@gitroom/helpers/subdomain/subdomain.management';
 import { HttpForbiddenException } from '@gitroom/nestjs-libraries/services/exception.filter';
-import { MastraService } from '@gitroom/nestjs-libraries/chat/mastra.service';
+import { PrismaService } from '@gitroom/nestjs-libraries/database/prisma/prisma.service';
 
 export const removeAuth = (res: Response) => {
   res.cookie('auth', '', {
@@ -28,7 +28,8 @@ export const removeAuth = (res: Response) => {
 export class AuthMiddleware implements NestMiddleware {
   constructor(
     private _organizationService: OrganizationService,
-    private _userService: UsersService
+    private _userService: UsersService,
+    private prisma: PrismaService
   ) {}
   async use(req: Request, res: Response, next: NextFunction) {
     const auth = req.headers.auth || req.cookies.auth;
@@ -39,14 +40,18 @@ export class AuthMiddleware implements NestMiddleware {
       // Verify the JWT signature only. Never trust authorization-relevant
       // claims (id, isSuperAdmin, activated) from the token body — always
       // re-resolve the user from the database using the id.
-      const payload = AuthService.verifyJWT(auth) as User | null;
+      const payload = AuthService.verifyJWT(auth) as
+        | (User & { julsWorkspaceId?: string; organizationId?: string })
+        | null;
       const orgHeader = req.cookies.showorg || req.headers.showorg;
 
       if (!payload?.id) {
         throw new HttpForbiddenException();
       }
 
-      let user = (await this._userService.getUserById(payload.id)) as User | null;
+      let user = (await this._userService.getUserById(
+        payload.id
+      )) as User | null;
 
       if (!user) {
         throw new HttpForbiddenException();
@@ -54,6 +59,32 @@ export class AuthMiddleware implements NestMiddleware {
 
       if (!user.activated) {
         throw new HttpForbiddenException();
+      }
+
+      // Managed identities can only use a scoped handoff session, never org fallback.
+      if (user.providerName === 'JULS') {
+        if (!payload.julsWorkspaceId || !payload.organizationId)
+          throw new HttpForbiddenException();
+        const managed = await this.prisma.julsWorkspace.findFirst({
+          where: {
+            id: payload.julsWorkspaceId,
+            userId: user.id,
+            organizationId: payload.organizationId,
+            revokedAt: null,
+          },
+        });
+        if (!managed || (orgHeader && orgHeader !== managed.organizationId))
+          throw new HttpForbiddenException();
+        const orgs = await this._organizationService.getOrgsByUserId(user.id);
+        const org = orgs.find(
+          (item) =>
+            item.id === managed.organizationId && !item.users[0].disabled
+        );
+        if (!org) throw new HttpForbiddenException();
+        delete user.password;
+        Object.assign(req, { user, org });
+        next();
+        return;
       }
 
       const impersonate = req.cookies.impersonate || req.headers.impersonate;

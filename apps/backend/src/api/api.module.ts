@@ -1,3 +1,9 @@
+import {
+  JulsController,
+  JulsSessionController,
+} from './routes/juls.controller';
+import { JulsAuthGuard } from '../services/juls/juls-auth.guard';
+import { JulsWorkspaceService } from '../services/juls/juls-workspace.service';
 import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
 import { AuthController } from '@gitroom/backend/api/routes/auth.controller';
 import { AuthService } from '@gitroom/backend/services/auth/auth.service';
@@ -34,7 +40,10 @@ import { NoAuthIntegrationsController } from '@gitroom/backend/api/routes/no.aut
 import { EnterpriseController } from '@gitroom/backend/api/routes/enterprise.controller';
 import { OAuthAppController } from '@gitroom/backend/api/routes/oauth-app.controller';
 import { ApprovedAppsController } from '@gitroom/backend/api/routes/approved-apps.controller';
-import { OAuthController, OAuthAuthorizedController } from '@gitroom/backend/api/routes/oauth.controller';
+import {
+  OAuthController,
+  OAuthAuthorizedController,
+} from '@gitroom/backend/api/routes/oauth.controller';
 import { AnnouncementsController } from '@gitroom/backend/api/routes/announcements.controller';
 import { AdminController } from '@gitroom/backend/api/routes/admin.controller';
 import { AuthProviderManager } from '@gitroom/backend/services/auth/providers/providers.manager';
@@ -68,6 +77,8 @@ const authenticatedController = [
 @Module({
   imports: [UploadModule],
   controllers: [
+    JulsController,
+    JulsSessionController,
     RootController,
     StripeController,
     AuthController,
@@ -79,6 +90,8 @@ const authenticatedController = [
     ...authenticatedController,
   ],
   providers: [
+    JulsAuthGuard,
+    JulsWorkspaceService,
     AuthService,
     StripeService,
     OpenaiService,
