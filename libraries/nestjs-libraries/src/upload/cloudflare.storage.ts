@@ -8,6 +8,7 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { Upload } from '@aws-sdk/lib-storage';
 import { Readable } from 'stream';
 import 'multer';
+import { s3ObjectKey } from './s3.object-key';
 import { makeId } from '@gitroom/nestjs-libraries/services/make.is';
 import mime from 'mime-types';
 // @ts-ignore
@@ -44,10 +45,11 @@ class CloudflareStorage implements IUploadProvider {
     secretKey: string,
     private region: string,
     private _bucketName: string,
-    private _uploadUrl: string
+    private _uploadUrl: string,
+    endpoint = `https://${accountID}.r2.cloudflarestorage.com`
   ) {
     this._client = new S3Client({
-      endpoint: `https://${accountID}.r2.cloudflarestorage.com`,
+      endpoint,
       region,
       credentials: {
         accessKeyId: accessKey,
@@ -111,9 +113,10 @@ class CloudflareStorage implements IUploadProvider {
 
     const params = {
       Bucket: this._bucketName,
-      Key: `${id}.${extension}`,
+      Key: s3ObjectKey(`${id}.${extension}`),
       Body: body,
       ContentType: safeContentType,
+      ACL: process.env.S3_ENDPOINT ? ('public-read' as const) : undefined,
       ChecksumMode: 'DISABLED',
     };
 
@@ -137,7 +140,7 @@ class CloudflareStorage implements IUploadProvider {
       const command = new PutObjectCommand({
         Bucket: this._bucketName,
         ACL: 'public-read',
-        Key: `${id}.${extension}`,
+        Key: s3ObjectKey(`${id}.${extension}`),
         Body: file.buffer,
         ContentType: safeContentType,
       });
@@ -181,7 +184,7 @@ class CloudflareStorage implements IUploadProvider {
         params: {
           Bucket: this._bucketName,
           ACL: 'public-read',
-          Key: key,
+          Key: s3ObjectKey(key),
           Body: stream,
           ContentType: mimetype,
         },
@@ -203,7 +206,10 @@ class CloudflareStorage implements IUploadProvider {
   async signDownloadUrl(fileName: string) {
     return getSignedUrl(
       this._client,
-      new GetObjectCommand({ Bucket: this._bucketName, Key: fileName }),
+      new GetObjectCommand({
+        Bucket: this._bucketName,
+        Key: s3ObjectKey(fileName),
+      }),
       { expiresIn: 3 * 3600 }
     );
   }
@@ -213,8 +219,9 @@ class CloudflareStorage implements IUploadProvider {
       this._client,
       new PutObjectCommand({
         Bucket: this._bucketName,
-        Key: fileName,
+        Key: s3ObjectKey(fileName),
         ContentType: contentType,
+        ACL: process.env.S3_ENDPOINT ? 'public-read' : undefined,
       }),
       { expiresIn: 3 * 3600 }
     );
@@ -226,7 +233,10 @@ class CloudflareStorage implements IUploadProvider {
 
   async readFile(fileName: string) {
     const { Body } = await this._client.send(
-      new GetObjectCommand({ Bucket: this._bucketName, Key: fileName })
+      new GetObjectCommand({
+        Bucket: this._bucketName,
+        Key: s3ObjectKey(fileName),
+      })
     );
 
     return Body!.transformToString();
@@ -236,9 +246,10 @@ class CloudflareStorage implements IUploadProvider {
     await this._client.send(
       new PutObjectCommand({
         Bucket: this._bucketName,
-        Key: fileName,
+        Key: s3ObjectKey(fileName),
         Body: body,
         ContentType: contentType,
+        ACL: process.env.S3_ENDPOINT ? 'public-read' : undefined,
       })
     );
   }
@@ -253,7 +264,7 @@ class CloudflareStorage implements IUploadProvider {
     await this._client.send(
       new DeleteObjectCommand({
         Bucket: this._bucketName,
-        Key: fileName,
+        Key: s3ObjectKey(fileName),
       })
     );
   }
