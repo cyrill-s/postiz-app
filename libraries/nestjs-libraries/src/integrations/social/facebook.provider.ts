@@ -22,6 +22,8 @@ import { Integration } from '@prisma/client';
 import { hasExtension } from '@gitroom/helpers/utils/has.extension';
 import { timer } from '@gitroom/helpers/utils/timer';
 import { Rules } from '@gitroom/nestjs-libraries/chat/rules.description.decorator';
+import FormDataUpload from 'form-data';
+import { lookup } from 'mime-types';
 
 export const META_GRAPH_API_VERSION = 'v25.0';
 
@@ -46,6 +48,50 @@ export class FacebookProvider extends SocialAbstract implements SocialProvider {
     return 63206;
   }
   dto = FacebookDto;
+
+  private mediaUrl(path: string) {
+    return path.indexOf('http') === 0
+      ? path
+      : `${process.env.FRONTEND_URL}/${path.replace(/^\/+/, '')}`;
+  }
+
+  private async uploadMedia<T extends object>(
+    url: string,
+    mediaPath: string,
+    fields: Record<string, string>,
+    identifier: string
+  ): Promise<T> {
+    const path = this.mediaUrl(mediaPath);
+
+    // Meta can ingest a public `url`/`file_url`, but that makes publishing
+    // depend on Meta's crawler being able to reach the Postiz media host. Send
+    // the bytes as multipart `source` instead. The form and source stream are
+    // rebuilt for every retry because neither can be replayed after a request.
+    return this.runStreamedUpload<T>(async () => {
+      const size = await this.mediaSize(path, this.identifier);
+      const stream = await this.mediaStream(path, this.identifier);
+      const form = new FormDataUpload();
+
+      for (const [key, value] of Object.entries(fields)) {
+        form.append(key, value);
+      }
+
+      const filename = path.split('/').pop()?.split('?')[0] || 'facebook-media';
+      form.append('source', stream, {
+        filename,
+        contentType: lookup(filename) || 'application/octet-stream',
+        knownLength: size,
+      });
+
+      const { data } = await this.getSsrfSafeAxios().post(url, form, {
+        headers: form.getHeaders(),
+        maxBodyLength: Infinity,
+        maxContentLength: Infinity,
+      });
+
+      return data as T;
+    }, identifier);
+  }
 
   override async checkValidity(
     [firstPost]: Array<ValidityMedia[]>,
@@ -139,7 +185,7 @@ export class FacebookProvider extends SocialAbstract implements SocialProvider {
       return {
         type: 'bad-body' as const,
         value: 'Invalid file',
-      }
+      };
     }
 
     if (body.indexOf('1404102') > -1) {
@@ -786,23 +832,19 @@ export class FacebookProvider extends SocialAbstract implements SocialProvider {
         id: videoId,
         permalink_url,
         ...all
-      } = await (
-        await this.fetch(
-          `https://graph.facebook.com/${META_GRAPH_API_VERSION}/${id}/videos?access_token=${accessToken}&fields=id,permalink_url`,
-          {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-              file_url: firstPost?.media?.[0]?.path!,
-              description: firstPost.message,
-              published: true,
-            }),
-          },
-          'upload mp4'
-        )
-      ).json();
+      } = await this.uploadMedia<{
+        id: string;
+        permalink_url?: string;
+        [key: string]: unknown;
+      }>(
+        `https://graph.facebook.com/${META_GRAPH_API_VERSION}/${id}/videos?access_token=${accessToken}&fields=id,permalink_url`,
+        firstPost.media[0].path,
+        {
+          description: firstPost.message,
+          published: 'true',
+        },
+        'upload mp4'
+      );
 
       finalUrl = 'https://www.facebook.com/reel/' + videoId;
       finalId = videoId;
@@ -811,22 +853,12 @@ export class FacebookProvider extends SocialAbstract implements SocialProvider {
         ? []
         : await Promise.all(
             firstPost.media.map(async (media) => {
-              const { id: photoId } = await (
-                await this.fetch(
-                  `https://graph.facebook.com/${META_GRAPH_API_VERSION}/${id}/photos?access_token=${accessToken}`,
-                  {
-                    method: 'POST',
-                    headers: {
-                      'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({
-                      url: media.path,
-                      published: false,
-                    }),
-                  },
-                  'upload images slides'
-                )
-              ).json();
+              const { id: photoId } = await this.uploadMedia<{ id: string }>(
+                `https://graph.facebook.com/${META_GRAPH_API_VERSION}/${id}/photos?access_token=${accessToken}`,
+                media.path,
+                { published: 'false' },
+                'upload images slides'
+              );
 
               return { media_fbid: photoId };
             })
