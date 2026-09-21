@@ -33,6 +33,14 @@ import {
   postId as postIdSearchParam,
 } from '@gitroom/nestjs-libraries/temporal/temporal.search.attribute';
 import { SubscriptionService } from '@gitroom/nestjs-libraries/database/prisma/subscriptions/subscription.service';
+import {
+  setHeartbeatDetails,
+  withHeartbeat,
+} from '@gitroom/nestjs-libraries/temporal/temporal.heartbeat';
+import {
+  BadBody,
+  Disconnect,
+} from '@gitroom/nestjs-libraries/integrations/social.abstract';
 
 // Drops fields the workflow and downstream activities never read — biggest wins are `error` (grows per retry) and `childrenPost` (Prisma side-loads it on every recursive row).
 function slimPost(post: any) {
@@ -61,6 +69,38 @@ function slimPost(post: any) {
   return rest;
 }
 
+// A genuinely missed occurrence (dead workflow) is only recovered by the
+// missing-posts sweep, which runs every hour - so anything later than the
+// sweep period plus retry margin is a stale anchor, not a missed publish.
+const REANCHOR_GRACE_MS = 2 * 60 * 60 * 1000;
+
+// A repeat post keeps its original anchor publishDate forever (updatePost only
+// flips the state, the calendar expands occurrences virtually). If the workflow
+// gets that raw past date, any (re)start - an accidental edit resetting the
+// state to QUEUE, or a missing-posts sweep poke - sleeps 0 and publishes
+// instantly, machine-gunning the channel. Roll the returned date forward to the
+// next occurrence on the anchor grid instead, so fresh starts wait for the next
+// real occurrence. Only for the initial QUEUE run: repeat chain children
+// (postNow) run against a PUBLISHED post and must keep publishing immediately.
+// Occurrences missed within the grace window still catch up and post.
+function reanchorInterval(post: any) {
+  if (!post?.intervalInDays || post.state !== State.QUEUE) {
+    return post;
+  }
+
+  const interval = post.intervalInDays * 24 * 60 * 60 * 1000;
+  const late = Date.now() - new Date(post.publishDate).getTime();
+  if (late <= REANCHOR_GRACE_MS) {
+    return post;
+  }
+
+  const next =
+    new Date(post.publishDate).getTime() +
+    Math.ceil(late / interval) * interval;
+
+  return { ...post, publishDate: new Date(next) };
+}
+
 @Injectable()
 @Activity()
 export class PostActivity {
@@ -86,7 +126,7 @@ export class PostActivity {
     for (const post of list) {
       await this._temporalService.client
         .getRawClient()
-        .workflow.signalWithStart('postWorkflowV106', {
+        .workflow.signalWithStart('postWorkflowV112', {
           workflowId: `post_${post.id}`,
           taskQueue: 'main',
           signal: 'poke',
@@ -135,7 +175,7 @@ export class PostActivity {
       return false;
     }
 
-    return post;
+    return reanchorInterval(post);
   }
 
   @ActivityMethod()
@@ -158,7 +198,10 @@ export class PostActivity {
       return [];
     }
 
-    return getPosts.map(slimPost);
+    // only the root drives the pre-publish sleep and the repeat schedule,
+    // the rest are comments
+    const [root, ...comments] = getPosts.map(slimPost);
+    return [reanchorInterval(root), ...comments];
   }
 
   @ActivityMethod()
@@ -177,26 +220,34 @@ export class PostActivity {
     integration: Integration,
     posts: Post[]
   ) {
-    const getIntegration = this._integrationManager.getSocialIntegration(
-      integration.providerIdentifier
-    );
+    // kept only for in-flight postWorkflowV108 runs, which set a
+    // heartbeatTimeout on this activity - removing the sender would kill
+    // them. Under V109+ (no heartbeatTimeout) this is a no-op and can be
+    // dropped once all V108 executions have drained
+    return withHeartbeat(() =>
+      this.handleDisconnect(integration, async () => {
+        const getIntegration = this._integrationManager.getSocialIntegration(
+          integration.providerIdentifier
+        );
 
-    const newPosts = await this._postService.updateTags(
-      integration.organizationId,
-      posts
-    );
+        const newPosts = await this._postService.updateTags(
+          integration.organizationId,
+          posts
+        );
 
-    return getIntegration.comment(
-      integration.internalId,
-      postId,
-      lastPostId,
-      integration.token,
-      await Promise.all(
-        (newPosts || []).map((p) =>
-          this.preparePost(integration, getIntegration, p, true)
-        )
-      ),
-      integration
+        return getIntegration.comment(
+          integration.internalId,
+          postId,
+          lastPostId,
+          integration.token,
+          await Promise.all(
+            (newPosts || []).map((p) =>
+              this.preparePost(integration, getIntegration, p, true)
+            )
+          ),
+          integration
+        );
+      })
     );
   }
 
@@ -285,11 +336,67 @@ export class PostActivity {
     return this.postSocialInternal(integration, posts, true);
   }
 
+  // A Disconnect error means the platform will keep rejecting this channel no
+  // matter how many token refreshes (e.g. TikTok's daily active user cap):
+  // mark the channel as needing a re-connect and notify the user, then rethrow
+  // as BadBody so every workflow version - frozen once on main - treats it as
+  // a terminal error without needing a new workflow.
+  private async handleDisconnect<T>(
+    integration: Integration,
+    func: () => Promise<T>
+  ): Promise<T> {
+    try {
+      return await func();
+    } catch (err) {
+      if (err instanceof Disconnect) {
+        try {
+          await this._integrationService.disconnectChannel(
+            integration.organizationId,
+            integration,
+            err.message
+          );
+        } catch (e) {
+          /**empty**/
+        }
+
+        throw new BadBody(
+          integration.providerIdentifier,
+          JSON.stringify({}),
+          Buffer.from('{}'),
+          err.message
+        );
+      }
+
+      throw err;
+    }
+  }
+
   private async postSocialInternal(
     integration: Integration,
     posts: Post[],
     allowPending: boolean
   ) {
+    // kept only for in-flight postWorkflowV108 runs, which set a
+    // heartbeatTimeout on this activity - removing the sender would kill
+    // them. Under V109+ (no heartbeatTimeout) this is a no-op and can be
+    // dropped once all V108 executions have drained
+    return withHeartbeat(() =>
+      this.handleDisconnect(integration, () =>
+        this.postSocialBody(integration, posts, allowPending)
+      )
+    );
+  }
+
+  private async postSocialBody(
+    integration: Integration,
+    posts: Post[],
+    allowPending: boolean
+  ) {
+    // Stage markers: whatever ran last is what a timed-out activity reports.
+    // Providers that go through this.fetch overwrite these with the exact URL;
+    // the ones on their own HTTP client (x, youtube, bluesky) are still
+    // narrowed down to the step they hung on.
+    setHeartbeatDetails('subscription lookup');
     if (process.env.STRIPE_SECRET_KEY) {
       const subscription = await this._subscriptionService.getSubscription(
         integration.organizationId
@@ -304,17 +411,20 @@ export class PostActivity {
       integration.providerIdentifier
     );
 
+    setHeartbeatDetails('update tags');
     const newPosts = await this._postService.updateTags(
       integration.organizationId,
       posts
     );
 
+    setHeartbeatDetails('resolve media');
     const mappedPosts = await Promise.all(
       (newPosts || []).map((p) =>
         this.preparePost(integration, getIntegration, p)
       )
     );
 
+    setHeartbeatDetails(`${integration.providerIdentifier}: publish`);
     const postNow =
       allowPending && getIntegration.postPending
         ? await getIntegration.postPending(
@@ -332,6 +442,7 @@ export class PostActivity {
 
     // The post is already published at this point: the streak is best-effort,
     // failing the activity here would retry it and publish again.
+    setHeartbeatDetails(`${integration.providerIdentifier}: published, streak`);
     try {
       await this._temporalService.client
         .getRawClient()
@@ -360,10 +471,12 @@ export class PostActivity {
       integration.providerIdentifier
     );
 
-    return getIntegration.checkPostStatus(
-      integration.token,
-      pendingData,
-      integration
+    return this.handleDisconnect(integration, () =>
+      getIntegration.checkPostStatus(
+        integration.token,
+        pendingData,
+        integration
+      )
     );
   }
 
@@ -373,10 +486,10 @@ export class PostActivity {
       integration.providerIdentifier
     );
 
-    return getIntegration.finalizePost(
-      integration.token,
-      pendingData,
-      integration
+    return withHeartbeat(() =>
+      this.handleDisconnect(integration, () =>
+        getIntegration.finalizePost(integration.token, pendingData, integration)
+      )
     );
   }
 
@@ -441,7 +554,10 @@ export class PostActivity {
         return;
       }
 
-      const post = await this._postService.getPostByForWebhookId(postId);
+      const post = await this._postService.getPostByForWebhookId(
+        postId,
+        integrationId
+      );
       await Promise.all(
         webhooks.map(async (webhook) => {
           try {

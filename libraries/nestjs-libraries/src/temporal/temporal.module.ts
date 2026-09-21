@@ -59,12 +59,15 @@ export const getTemporalModule = (
                   )
                 : undefined;
 
+              // Workflows only ever run on the `main` queue; the other Workers
+              // are activity-only, so skip the workflow bundle (webpack build,
+              // workflow thread + V8 isolate, sticky cache) on them.
               return {
                 taskQueue,
                 // All workflow starts use main; provider queues receive only
                 // activities (see posts.service startWorkflow/proxyTaskQueue).
                 // Avoid a separate workflow VM for each provider on small VPSes.
-                ...(process.env.TEMPORAL_LOW_MEMORY === 'true' && taskQueue !== 'main'
+                ...(taskQueue !== 'main'
                   ? {}
                   : process.env.TEMPORAL_WORKFLOW_BUNDLE
                   ? {
@@ -88,6 +91,12 @@ export const getTemporalModule = (
                         reuseV8Context: true,
                       }
                     : {}),
+                  // By default the SDK throttles heartbeat sends to 60s, so
+                  // against the workflow's heartbeatTimeout one dropped send
+                  // or a minute of event-loop lag eats most of the margin.
+                  // Sending every 15s keeps the recorded heartbeat fresh even
+                  // when individual sends fail or fire late.
+                  maxHeartbeatThrottleInterval: '15s',
                 },
               };
             }),

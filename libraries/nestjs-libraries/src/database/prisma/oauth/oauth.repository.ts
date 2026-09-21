@@ -64,6 +64,39 @@ export class OAuthRepository {
     });
   }
 
+  createDynamicApp(data: {
+    name: string;
+    redirectUrl: string;
+    redirectUris: string;
+    clientId: string;
+    clientSecret?: string;
+    tokenEndpointAuthMethod: string;
+  }) {
+    return this._oauthApp.model.oAuthApp.create({
+      data: {
+        name: data.name,
+        redirectUrl: data.redirectUrl,
+        redirectUris: data.redirectUris,
+        clientId: data.clientId,
+        clientSecret: data.clientSecret,
+        tokenEndpointAuthMethod: data.tokenEndpointAuthMethod,
+        dynamic: true,
+      },
+    });
+  }
+
+  // Dynamic clients register before the consent screen, so abandoned flows
+  // leave orphan rows; prune the ones no user ever authorized
+  deleteStaleDynamicApps(olderThan: Date) {
+    return this._oauthApp.model.oAuthApp.deleteMany({
+      where: {
+        dynamic: true,
+        createdAt: { lt: olderThan },
+        authorizations: { none: {} },
+      },
+    });
+  }
+
   async updateApp(
     orgId: string,
     data: {
@@ -133,6 +166,9 @@ export class OAuthRepository {
     organizationId: string;
     authorizationCode: string;
     codeExpiresAt: Date;
+    codeChallenge?: string;
+    codeChallengeMethod?: string;
+    redirectUri?: string;
   }) {
     return this._oauthAuth.model.oAuthAuthorization.upsert({
       where: {
@@ -148,10 +184,16 @@ export class OAuthRepository {
         organizationId: data.organizationId,
         authorizationCode: data.authorizationCode,
         codeExpiresAt: data.codeExpiresAt,
+        codeChallenge: data.codeChallenge || null,
+        codeChallengeMethod: data.codeChallengeMethod || null,
+        redirectUri: data.redirectUri || null,
       },
       update: {
         authorizationCode: data.authorizationCode,
         codeExpiresAt: data.codeExpiresAt,
+        codeChallenge: data.codeChallenge || null,
+        codeChallengeMethod: data.codeChallengeMethod || null,
+        redirectUri: data.redirectUri || null,
         accessToken: null,
         revokedAt: null,
       },
@@ -184,6 +226,9 @@ export class OAuthRepository {
           accessToken: encryptedToken,
           authorizationCode: null,
           codeExpiresAt: null,
+          codeChallenge: null,
+          codeChallengeMethod: null,
+          redirectUri: null,
         },
       });
       if (!consumed.count) return null;
@@ -279,6 +324,13 @@ export class OAuthRepository {
         },
       },
       include: {
+        oauthApp: {
+          select: {
+            clientId: true,
+            dynamic: true,
+            redirectUris: true,
+          },
+        },
         organization: {
           include: {
             subscription: {
@@ -291,7 +343,11 @@ export class OAuthRepository {
           },
         },
         user: {
-          select: { id: true },
+          select: {
+            id: true,
+            email: true,
+            activated: true,
+          },
         },
       },
     });

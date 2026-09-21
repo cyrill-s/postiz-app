@@ -7,6 +7,7 @@ import {
 import {
   BadRequestException,
   Injectable,
+  NotFoundException,
   ValidationPipe,
 } from '@nestjs/common';
 import { PostsRepository } from '@gitroom/nestjs-libraries/database/prisma/posts/posts.repository';
@@ -58,7 +59,7 @@ import { stripLinks } from '@gitroom/helpers/utils/strip.links';
 import { validate } from 'class-validator';
 import { plainToInstance } from 'class-transformer';
 import { stripHtmlValidation } from '@gitroom/helpers/utils/strip.html.validation';
-import { weightedLength } from '@gitroom/helpers/utils/count.length';
+import { countLength } from '@gitroom/helpers/utils/count.length';
 
 type PostWithConditionals = Post & {
   integration?: Integration;
@@ -149,6 +150,10 @@ export class PostsService {
 
   async getPostById(postId: string, orgId: string) {
     return this._postRepository.getPostById(postId, orgId);
+  }
+
+  async getPostTimeline(postId: string, orgId: string) {
+    return this._postRepository.getPostTimeline(postId, orgId);
   }
 
   async updateReleaseId(orgId: string, postId: string, releaseId: string) {
@@ -354,9 +359,21 @@ export class PostsService {
         (
           await Promise.all(
             (imagesList || []).map(async (p: any) => {
-              if (!p.path && p.id) {
+              if (!p.id) {
+                return p;
+              }
+
+              if (!p.path) {
                 imageUpdateNeeded = true;
                 return this._mediaService.getMediaById(p.id);
+              }
+
+              // the normalizer may have replaced the file after the post was
+              // composed; a record still processing publishes the original
+              const fresh = await this._mediaService.getMediaById(p.id);
+              if (fresh?.status === 'ready' && fresh.path !== p.path) {
+                imageUpdateNeeded = true;
+                return { ...p, name: fresh.name, path: fresh.path };
               }
 
               return p;
@@ -693,8 +710,8 @@ export class PostsService {
     return this._postRepository.countPostsFromDay(orgId, date);
   }
 
-  getPostByForWebhookId(id: string) {
-    return this._postRepository.getPostByForWebhookId(id);
+  getPostByForWebhookId(id: string, integrationId: string) {
+    return this._postRepository.getPostByForWebhookId(id, integrationId);
   }
 
   async startWorkflow(
@@ -732,7 +749,7 @@ export class PostsService {
     try {
       const handle = await this._temporalService.client
         .getRawClient()
-        ?.workflow.start('postWorkflowV106', {
+        ?.workflow.start('postWorkflowV112', {
           workflowId: `post_${postId}`,
           taskQueue: 'main',
           workflowIdConflictPolicy: 'TERMINATE_EXISTING',
@@ -834,27 +851,12 @@ export class PostsService {
           errors = err?.message || 'Invalid media';
         }
 
-        const maximumCharacters = provider.maxLength(additionalSettings);
-        const isX = integration.providerIdentifier === 'x';
+        const maximumCharacters = provider.maxLength(
+          additionalSettings,
+          settings
+        );
 
         const emptyContent = (post.value || []).some((a) => {
-          const strip = supportsSocialFormatting(integration.providerIdentifier)
-            ? compileSocialContent(
-                integration.providerIdentifier,
-                a.content || ''
-              ).text
-            : stripHtmlValidation('normal', a.content || '', true);
-          const length = isX ? weightedLength(strip) : strip.length;
-          return length === 0 && (a.image || []).length === 0;
-        });
-
-        const tooLong = (post.value || []).some((a, index) => {
-          const strip = supportsSocialFormatting(integration.providerIdentifier)
-            ? compileSocialContent(
-                integration.providerIdentifier,
-                a.content || ''
-              ).text
-            : stripHtmlValidation('normal', a.content || '', true);
           const compiled = supportsSocialFormatting(
             integration.providerIdentifier
           )
@@ -863,16 +865,30 @@ export class PostsService {
                 a.content || ''
               )
             : undefined;
-          const weighted = compiled
+          const strip =
+            compiled?.text ||
+            stripHtmlValidation('normal', a.content || '', true);
+          const length = compiled
             ? compiled.length
-            : isX
-            ? weightedLength(strip)
-            : strip.length;
+            : countLength(integration.providerIdentifier, strip);
+          return length === 0 && (a.image || []).length === 0;
+        });
+
+        const tooLong = (post.value || []).some((a, index) => {
+          const compiled = supportsSocialFormatting(
+            integration.providerIdentifier
+          )
+            ? compileSocialContent(
+                integration.providerIdentifier,
+                a.content || ''
+              )
+            : undefined;
+          const strip =
+            compiled?.text ||
+            stripHtmlValidation('normal', a.content || '', true);
           const totalCharacters = compiled
             ? compiled.length
-            : weighted > strip.length
-            ? weighted
-            : strip.length;
+            : countLength(integration.providerIdentifier, strip);
           return (
             totalCharacters >
             socialContentLimit(
@@ -924,13 +940,53 @@ export class PostsService {
     return '';
   }
 
+  // A schedule-type save targeting an already-PUBLISHED post republishes it to
+  // the platform: require the explicit `republish` opt-in instead. The message
+  // doubles as the confirmation dialog for API/MCP automation.
+  private guardAgainstRepublish(
+    post: {
+      state: State;
+      publishDate: Date;
+      integration?: { providerIdentifier: string };
+    } | null,
+    source: 'createPost' | 'changeDate'
+  ) {
+    if (post?.state !== 'PUBLISHED') {
+      return;
+    }
+
+    const howToUpdate =
+      source === 'createPost' ? `use type 'update'` : `use action 'update'`;
+
+    throw new BadRequestException(
+      `This post was already published on ${dayjs
+        .utc(post.publishDate)
+        .format(
+          'YYYY-MM-DD HH:mm'
+        )} UTC. Saving it this way would publish it again to ${
+        post.integration?.providerIdentifier || 'the channel'
+      }. To edit without republishing, ${howToUpdate}. To intentionally publish again, pass republish: true.`
+    );
+  }
+
   async createPost(
     orgId: string,
     body: CreatePostDto,
-    creationMethod: CreationMethod
+    creationMethod: CreationMethod,
+    keepGroup = false
   ): Promise<any[]> {
     const postList = [];
     for (const post of body.posts) {
+      if (
+        (body.type === 'schedule' || body.type === 'now') &&
+        !body.republish &&
+        post.value?.[0]?.id
+      ) {
+        this.guardAgainstRepublish(
+          await this._postRepository.getPostById(post.value[0].id, orgId),
+          'createPost'
+        );
+      }
       const provider = this._integrationManager.getSocialIntegration(
         (post.settings as any)?.__type
       );
@@ -958,7 +1014,8 @@ export class PostsService {
         post,
         body.tags,
         creationMethod,
-        body.inter
+        body.inter,
+        keepGroup
       );
 
       if (!posts?.length) {
@@ -982,6 +1039,153 @@ export class PostsService {
     }
 
     return postList;
+  }
+
+  // Update ONLY the provider settings of a not-yet-published post (scheduled or
+  // draft). The passed keys are merged into the existing settings; content and
+  // publish date stay as they are, so the running publish workflow is left
+  // untouched (type "update"). Shared by the agent/MCP tool and the public API
+  // PUT /posts/:id/settings so both go through one path.
+  async updatePostSettings(
+    orgId: string,
+    postId: string,
+    settings: Record<string, any>,
+    creationMethod: CreationMethod
+  ): Promise<{ postId: string; publishDate: string }> {
+    // Ordered as post -> comments, root includes integration and tags.
+    const ordered = await this.getPostsRecursively(postId, true, orgId, true);
+
+    const [root] = ordered;
+    if (!root) {
+      throw new NotFoundException('Post not found');
+    }
+
+    if (root.parentPostId) {
+      throw new BadRequestException(
+        'This id belongs to a comment, pass the id of the main post'
+      );
+    }
+
+    if (root.state !== 'QUEUE' && root.state !== 'DRAFT') {
+      throw new BadRequestException(
+        'Only scheduled posts that were not published yet (or drafts) can be updated'
+      );
+    }
+
+    if (
+      root.state === 'QUEUE' &&
+      dayjs.utc(root.publishDate).isBefore(dayjs.utc())
+    ) {
+      throw new BadRequestException(
+        'The publish time of this post already passed, it cannot be updated'
+      );
+    }
+
+    const integration = (root as any).integration;
+
+    let existingSettings: Record<string, any>;
+    try {
+      existingSettings = JSON.parse(root.settings || '{}');
+    } catch (err) {
+      existingSettings = {};
+    }
+
+    // Merge: only the passed keys change, everything else stays.
+    const mergedSettings = {
+      ...existingSettings,
+      ...(settings || {}),
+      __type: integration.providerIdentifier,
+    };
+
+    // Keep the existing content/ids so the posts are updated in place (the
+    // workflow identity is preserved) - only the settings differ.
+    const value = ordered.map((p) => {
+      let image = [];
+      try {
+        image = JSON.parse(p.image || '[]');
+      } catch (err) {}
+      return {
+        id: p.id,
+        content: p.content,
+        delay: p.delay || 0,
+        image,
+      };
+    });
+
+    // Same server-side validation as the dashboard / public create route.
+    const [validation] = await this.validatePosts(orgId, [
+      {
+        integration: { id: integration.id },
+        settings: mergedSettings,
+        value: value.map((p) => ({ content: p.content, image: p.image })),
+      },
+    ]);
+
+    if (validation.emptyContent) {
+      throw new BadRequestException(
+        `${validation.name}: Your post should have at least one character or one image.`
+      );
+    }
+
+    if (root.state !== 'DRAFT') {
+      if (!validation.valid) {
+        throw new BadRequestException(
+          `${validation.name}: ${
+            validation.settingsError || 'Please fix your settings'
+          }`
+        );
+      }
+
+      if (validation.errors !== true) {
+        throw new BadRequestException(
+          `${validation.name}: ${validation.errors}`
+        );
+      }
+
+      if (validation.tooLong) {
+        throw new BadRequestException(
+          `${validation.name}: The maximum characters is ${validation.maximumCharacters}`
+        );
+      }
+    }
+
+    const date = dayjs.utc(root.publishDate).format('YYYY-MM-DDTHH:mm:ss');
+
+    const [output] = await this.createPost(
+      orgId,
+      {
+        date,
+        // Settings-only update: keep the current state and leave the running
+        // publish workflow alone.
+        type: 'update',
+        shortLink: false,
+        tags: ((root as any).tags || []).map((t: any) => ({
+          value: t.tag.name,
+          label: t.tag.name,
+        })),
+        posts: [
+          {
+            integration,
+            group: root.group,
+            settings: mergedSettings,
+            value,
+          },
+        ],
+      } as any,
+      creationMethod,
+      // Keep the group stable: a client may have the calendar open while the
+      // settings are updated out of band, and the calendar links posts by group.
+      true
+    );
+
+    if (!output) {
+      throw new BadRequestException('Failed to update the post');
+    }
+
+    return {
+      postId: output.postId,
+      publishDate: date,
+    };
   }
 
   async separatePosts(content: string, len: number) {
@@ -1078,9 +1282,14 @@ export class PostsService {
     orgId: string,
     id: string,
     date: string,
-    action: 'schedule' | 'update' = 'schedule'
+    action: 'schedule' | 'update' = 'schedule',
+    republish = false
   ) {
     const getPostById = await this._postRepository.getPostById(id, orgId);
+
+    if (action === 'schedule' && !republish) {
+      this.guardAgainstRepublish(getPostById, 'changeDate');
+    }
 
     // schedule: Set status to QUEUE and change date (reschedule the post)
     // update: Just change the date without changing the status

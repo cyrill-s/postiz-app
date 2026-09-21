@@ -72,6 +72,15 @@ export const ContinueIntegration: FC<{
       };
     }
 
+    if (provider === 'tiktok-business') {
+      // The TikTok Business API redirects back with `auth_code` instead of `code`
+      return {
+        state: searchParams.state || '',
+        code: searchParams.auth_code || searchParams.code || '',
+        refresh: searchParams.refresh || '',
+      };
+    }
+
     if (provider === 'vk') {
       return {
         ...searchParams,
@@ -261,6 +270,7 @@ export const ContinueIntegration: FC<{
       gmb: 'Google Business',
       tumblr: 'Tumblr',
       'vk-community': 'VK — сообщество',
+      'tiktok-business': 'TikTok Business',
     };
     return names[provider] || provider;
   }, [provider]);
