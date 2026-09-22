@@ -262,6 +262,86 @@ suite('Juls workspace HTTP contract (isolated PostgreSQL)', () => {
     );
   });
 
+  test('connects only a MAX channel administered by the OTP-bound MAX user', async () => {
+    const workspace = await provision();
+    process.env.JULS_MAX_BOT_TOKEN = 'synthetic-server-only-max-token';
+    const realFetch = global.fetch;
+    const maxFetch = jest
+      .spyOn(global, 'fetch')
+      .mockImplementation(async (url: any, init?: any) => {
+        const target = String(url);
+        if (!target.startsWith('https://platform-api2.max.ru'))
+          return realFetch(url, init);
+        if (target.endsWith('/members/me'))
+          return new Response(
+            JSON.stringify({ is_admin: true, permissions: ['write'] })
+          );
+        if (target.endsWith('/members/admins'))
+          return new Response(
+            JSON.stringify({
+              members: [
+                {
+                  user_id: 789,
+                  is_owner: true,
+                  is_admin: true,
+                  is_bot: false,
+                },
+              ],
+            })
+          );
+        return new Response(
+          JSON.stringify({
+            chat_id: -123456,
+            type: 'channel',
+            status: 'active',
+            title: 'Juls MAX channel',
+          })
+        );
+      });
+    try {
+      const response = await signed('max-channel/connect', {
+        externalWorkspaceId: input.externalWorkspaceId,
+        actorExternalUserId: input.owner.externalUserId,
+        channelId: '-123456',
+        maxUserId: '789',
+      });
+      expect(response.status).toBe(200);
+      expect(response.headers.get('cache-control')).toBe('no-store');
+      const result = await response.json();
+      expect(result).toMatchObject({
+        channelId: '-123456',
+        name: 'Juls MAX channel',
+      });
+      const integration = await prisma.integration.findUnique({
+        where: {
+          organizationId_internalId: {
+            organizationId: workspace.organizationId,
+            internalId: 'max:-123456',
+          },
+        },
+      });
+      expect(integration).toMatchObject({
+        id: result.integrationId,
+        providerIdentifier: 'max',
+      });
+      expect(
+        JSON.parse(AuthService.fixedDecryption(integration.token))
+      ).toEqual({ chatId: '-123456', tokenSource: 'juls' });
+      expect(integration.token).not.toContain(process.env.JULS_MAX_BOT_TOKEN);
+      expect(
+        await prisma.julsAuditEvent.count({
+          where: {
+            workspace: { organizationId: workspace.organizationId },
+            action: 'max_channel_connected',
+          },
+        })
+      ).toBe(1);
+    } finally {
+      maxFetch.mockRestore();
+      delete process.env.JULS_MAX_BOT_TOKEN;
+    }
+  });
+
   test('a code can be redeemed exactly once under concurrency', async () => {
     const result = await provision();
     const outcomes = await Promise.allSettled([

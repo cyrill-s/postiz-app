@@ -51,3 +51,15 @@ export class JulsHandoffDto extends JulsWorkspaceDto {
   @Matches(/^[A-Za-z0-9_-]+$/)
   actorExternalUserId: string;
 }
+
+export class JulsMaxChannelDto extends JulsHandoffDto {
+  @IsString()
+  @Matches(/^-?[1-9][0-9]{0,15}$/)
+  channelId: string;
+
+  // Juls obtains this identity from the one-time code sent to the MAX bot.
+  // Postiz independently checks that this user is an administrator of channelId.
+  @IsString()
+  @Matches(/^[1-9][0-9]{0,15}$/)
+  maxUserId: string;
+}

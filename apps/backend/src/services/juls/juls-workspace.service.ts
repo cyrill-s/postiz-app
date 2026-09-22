@@ -5,7 +5,13 @@ import { Prisma, JulsWorkspace } from '@prisma/client';
 import { PrismaService } from '@gitroom/nestjs-libraries/database/prisma/prisma.service';
 import { AuthService } from '@gitroom/helpers/auth/auth.service';
 import { julsConfiguration } from './juls-auth.guard';
-import { JulsHandoffDto, JulsProvisionDto, JulsWorkspaceDto } from './juls.dto';
+import {
+  JulsHandoffDto,
+  JulsMaxChannelDto,
+  JulsProvisionDto,
+  JulsWorkspaceDto,
+} from './juls.dto';
+import { MaxProvider } from '@gitroom/nestjs-libraries/integrations/social/max.provider';
 
 const digest = (value: string) =>
   createHash('sha256').update(value).digest('hex');
@@ -227,6 +233,73 @@ export class JulsWorkspaceService {
       });
       url.searchParams.set('ticket', ticket);
       return { url: url.toString(), expiresAt: expiresAt.toISOString() };
+    });
+  }
+
+  async connectMaxChannel(input: JulsMaxChannelDto) {
+    // Authorize before calling MAX, then take the same lock again for the write.
+    // This keeps a remote request out of a database transaction while the second
+    // active() check prevents a concurrent revoke from creating a channel.
+    await this.locked(input.externalWorkspaceId, async (tx, workspace) => {
+      await this.active(tx, workspace);
+      if (workspace.externalOwnerId !== input.actorExternalUserId)
+        fail('actor_forbidden', 403);
+    });
+
+    const verified = await new MaxProvider().authenticateJulsChannel({
+      chatId: input.channelId,
+      maxUserId: input.maxUserId,
+    });
+    if (typeof verified === 'string') fail(verified, 400);
+
+    return this.locked(input.externalWorkspaceId, async (tx, workspace) => {
+      await this.active(tx, workspace);
+      if (workspace.externalOwnerId !== input.actorExternalUserId)
+        fail('actor_forbidden', 403);
+
+      const integration = await tx.integration.upsert({
+        where: {
+          organizationId_internalId: {
+            organizationId: workspace.organizationId,
+            internalId: verified.id,
+          },
+        },
+        create: {
+          organizationId: workspace.organizationId,
+          internalId: verified.id,
+          rootInternalId: verified.id,
+          name: verified.name,
+          picture: verified.picture || undefined,
+          providerIdentifier: 'max',
+          type: 'social',
+          token: verified.accessToken,
+          refreshToken: '',
+          profile: '',
+        },
+        update: {
+          name: verified.name,
+          picture: verified.picture || undefined,
+          providerIdentifier: 'max',
+          type: 'social',
+          token: verified.accessToken,
+          refreshToken: '',
+          disabled: false,
+          deletedAt: null,
+          refreshNeeded: false,
+        },
+      });
+      await tx.julsAuditEvent.create({
+        data: {
+          workspaceId: workspace.id,
+          action: 'max_channel_connected',
+          actorId: input.actorExternalUserId,
+        },
+      });
+      return {
+        integrationId: integration.id,
+        channelId: input.channelId,
+        name: integration.name,
+      };
     });
   }
 

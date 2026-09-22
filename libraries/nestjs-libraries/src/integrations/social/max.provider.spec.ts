@@ -8,6 +8,7 @@ jest.mock('@gitroom/helpers/utils/timer', () => ({
 }));
 
 const credentials = { chatId: '-123456', token: 'private-max-bot-token' };
+const julsToken = 'private-juls-max-bot-token';
 const post = {
   id: 'post-1',
   message: 'Привет из Postiz! https://example.org',
@@ -49,11 +50,13 @@ describe('MAX channels', () => {
   };
   beforeEach(() => {
     process.env.JWT_SECRET = 'isolated-test-encryption-key';
+    delete process.env.JULS_MAX_BOT_TOKEN;
     provider = new MaxProvider();
     mock = jest.spyOn(global, 'fetch');
     encrypted = AuthService.fixedEncryption(JSON.stringify(credentials));
   });
   afterEach(() => {
+    delete process.env.JULS_MAX_BOT_TOKEN;
     jest.restoreAllMocks();
     jest.clearAllMocks();
   });
@@ -89,6 +92,63 @@ describe('MAX channels', () => {
     channel();
     reply({ is_admin: true, permissions: ['post_edit_delete_message'] });
     expect(await auth()).toMatchObject({ id: 'max:-123456' });
+  });
+  it('verifies a Juls channel owner and stores only a server-token marker', async () => {
+    process.env.JULS_MAX_BOT_TOKEN = julsToken;
+    channel();
+    reply({ is_admin: true, permissions: ['write'] });
+    reply({
+      members: [
+        { user_id: 789, is_admin: true, is_owner: true, is_bot: false },
+      ],
+    });
+    const result = await provider.authenticateJulsChannel({
+      chatId: credentials.chatId,
+      maxUserId: '789',
+    });
+    expect(result).toMatchObject({
+      id: 'max:-123456',
+      name: 'Новости',
+    });
+    expect(typeof result).not.toBe('string');
+    const stored = JSON.parse(
+      AuthService.fixedDecryption((result as any).accessToken)
+    );
+    expect(stored).toEqual({ chatId: '-123456', tokenSource: 'juls' });
+    expect(JSON.stringify(stored)).not.toContain(julsToken);
+
+    reply({ message: { body: { mid: 'mid.juls' } } });
+    await provider.post('max:-123456', (result as any).accessToken, [post]);
+    expect(mock.mock.calls[3][1].headers.Authorization).toBe(julsToken);
+  });
+  it('rejects a Juls identity that does not administer the channel', async () => {
+    process.env.JULS_MAX_BOT_TOKEN = julsToken;
+    channel();
+    reply({ is_admin: true, permissions: ['write'] });
+    reply({
+      members: [{ user_id: 999, is_admin: true, is_bot: false }],
+    });
+    await expect(
+      provider.authenticateJulsChannel({
+        chatId: credentials.chatId,
+        maxUserId: '789',
+      })
+    ).resolves.toBe('max_user_not_channel_admin');
+  });
+  it('requires the Juls bot token on both connect and publish', async () => {
+    await expect(
+      provider.authenticateJulsChannel({
+        chatId: credentials.chatId,
+        maxUserId: '789',
+      })
+    ).resolves.toBe('max_bot_not_configured');
+    const stored = AuthService.fixedEncryption(
+      JSON.stringify({ chatId: credentials.chatId, tokenSource: 'juls' })
+    );
+    await expect(
+      provider.post('max:-123456', stored, [post])
+    ).rejects.toBeInstanceOf(BadBody);
+    expect(mock).not.toHaveBeenCalled();
   });
   it.each([
     { type: 'dialog' },

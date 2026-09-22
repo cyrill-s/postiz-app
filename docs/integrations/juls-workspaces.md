@@ -25,6 +25,9 @@ secret. Set these Postiz variables in secret/runtime configuration:
   (`openssl rand -hex 32` is suitable; use the resulting string verbatim for HMAC).
 - `JULS_ISSUER`: stable Juls installation identifier, e.g. `juls-production`.
 - `JULS_OAUTH_CLIENT_ID`: the registered app's `pca_...` client id.
+- `JULS_MAX_BOT_TOKEN`: token for the dedicated Juls bot from MAX for Business.
+  Keep it in the Postiz backend/orchestrator runtime only; never put it in the
+  Mini App, a browser payload, model context or a user's provider settings.
 - Existing `JWT_SECRET`, `FRONTEND_URL` and `NEXT_PUBLIC_BACKEND_URL` must be set.
   The latter is the browser-accessible backend URL, including `/api` if proxied.
   Backend and frontend must share the existing Postiz cookie domain. Production
@@ -182,6 +185,47 @@ return-to-Juls flow are future UX, not part of v1. It grants owner-level Postiz 
 access within this organization, not a restricted connect-only capability.
 Provider consent and any required provider application approval still happen in
 Postiz. Juls can determine channel readiness using MCP `integrationList`.
+
+## Connect a MAX channel
+
+Juls must first bind the authenticated Juls user to a MAX user identity with a
+short-lived, single-use code sent in a private dialog with the dedicated bot.
+The code must be random, hashed at rest, expire promptly and be consumed once.
+The resulting MAX `user_id` is server evidence; do not accept it from the Mini
+App or from an unsigned client request.
+
+After that binding, Juls sends a signed server-to-server request:
+
+```http
+POST /internal/juls/max-channel/connect
+```
+
+```json
+{
+  "externalWorkspaceId": "ws_123",
+  "actorExternalUserId": "user_456",
+  "channelId": "-77691527321772",
+  "maxUserId": "123456789"
+}
+```
+
+The request uses the same HMAC headers and canonical form as the other Juls
+POST routes. Postiz checks all of the following with its server-only bot token:
+
+- the Workspace is active and the actor is its owner;
+- `channelId` is an active MAX channel;
+- the dedicated Juls bot is an administrator with publishing permission;
+- the MAX identity established by the one-time code is an owner or administrator
+  of that exact channel.
+
+Only then is the channel upserted into the Workspace. The stored integration
+credential contains `channelId` plus a server-token marker, not the bot token.
+Publishing resolves the token from `JULS_MAX_BOT_TOKEN` inside the worker.
+Response: `{ integrationId, channelId, name }`. Repeating the request is safe.
+
+This endpoint intentionally does not implement the bot dialog itself. The Juls
+service owns issuance/consumption of the one-time code and passes the resulting
+MAX identity only over this authenticated server channel.
 
 ## Revoke access
 

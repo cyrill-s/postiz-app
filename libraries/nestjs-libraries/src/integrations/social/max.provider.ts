@@ -22,6 +22,8 @@ const API = 'https://platform-api2.max.ru';
 const MEDIA_NOTICE =
   'MAX: до 10 изображений или видео. Изображение — до 50 МБ, видео — до 250 МБ.';
 type Credentials = { chatId: string; token: string };
+type JulsCredentials = { chatId: string; tokenSource: 'juls' };
+type StoredCredentials = Credentials | JulsCredentials;
 type Attachment = { type: 'image' | 'video'; payload: Record<string, unknown> };
 
 export class MaxProvider extends SocialAbstract implements SocialProvider {
@@ -84,6 +86,27 @@ export class MaxProvider extends SocialAbstract implements SocialProvider {
     );
   }
 
+  private validChatId(chatId: unknown): chatId is string {
+    return (
+      typeof chatId === 'string' &&
+      /^-?[1-9][0-9]{0,15}$/.test(chatId) &&
+      Number.isSafeInteger(Number(chatId))
+    );
+  }
+
+  private resolveCredentials(data: StoredCredentials): Credentials | null {
+    if (!data || !this.validChatId(data.chatId)) return null;
+    if ('token' in data) return this.validCredentials(data) ? data : null;
+    const token = process.env.JULS_MAX_BOT_TOKEN;
+    if (
+      data.tokenSource !== 'juls' ||
+      typeof token !== 'string' ||
+      !/^\S{1,4096}$/.test(token)
+    )
+      return null;
+    return { chatId: data.chatId, token };
+  }
+
   private fail(message: string): never {
     throw new BadBody(this.identifier, '{}', '{}', message);
   }
@@ -104,50 +127,111 @@ export class MaxProvider extends SocialAbstract implements SocialProvider {
       return 'Укажите токен бота и ID канала MAX.';
     }
     try {
-      const chat = await this.api<{
-        chat_id: number;
-        type: string;
-        status: string;
-        title: string;
-        icon?: { url?: string };
-      }>(`/chats/${credentials.chatId}`, credentials.token);
-      if (
-        String(chat.chat_id) !== credentials.chatId ||
-        chat.type !== 'channel' ||
-        chat.status !== 'active'
-      ) {
+      const details = await this.verifyChannel(
+        credentials.chatId,
+        credentials.token
+      );
+      if (details === 'max_channel_invalid')
         return 'Укажите ID активного канала MAX, в который добавлен бот.';
-      }
-      const member = await this.api<{
-        is_admin: boolean;
-        is_owner: boolean;
-        permissions?: string[];
-      }>(`/chats/${credentials.chatId}/members/me`, credentials.token);
-      if (
-        !member.is_owner &&
-        !(
-          member.is_admin &&
-          member.permissions?.some((p) =>
-            ['write', 'post_edit_delete_message'].includes(p)
-          )
-        )
-      ) {
+      if (details === 'max_bot_publish_permission_missing')
         return 'Назначьте бота администратором канала с правом публикации и повторите подключение.';
-      }
+      if (typeof details === 'string') return details;
       return {
-        id: `max:${credentials.chatId}`,
-        name: chat.title || 'MAX',
+        ...details,
         accessToken: AuthService.fixedEncryption(JSON.stringify(credentials)),
-        refreshToken: '',
-        expiresIn: 0,
-        picture: chat.icon?.url || '',
-        username: '',
       };
     } catch (error) {
       if (error instanceof BadBody || error instanceof RefreshToken)
         return error.message;
       return 'Не удалось проверить доступ к MAX. Повторите подключение позже.';
     }
+  }
+
+  async authenticateJulsChannel(input: {
+    chatId: string;
+    maxUserId: string;
+  }): Promise<AuthTokenDetails | string> {
+    const token = process.env.JULS_MAX_BOT_TOKEN;
+    if (!token || !/^\S{1,4096}$/.test(token)) return 'max_bot_not_configured';
+    if (
+      !this.validChatId(input.chatId) ||
+      !/^[1-9][0-9]{0,15}$/.test(input.maxUserId) ||
+      !Number.isSafeInteger(Number(input.maxUserId))
+    )
+      return 'max_channel_invalid';
+    try {
+      const details = await this.verifyChannel(input.chatId, token);
+      if (typeof details === 'string') return details;
+      const admins = await this.api<{
+        members?: Array<{
+          user_id: number | string;
+          is_owner?: boolean;
+          is_admin?: boolean;
+          is_bot?: boolean;
+        }>;
+      }>(`/chats/${input.chatId}/members/admins`, token);
+      const manager = admins.members?.find(
+        (member) =>
+          String(member.user_id) === input.maxUserId &&
+          !member.is_bot &&
+          (member.is_owner || member.is_admin)
+      );
+      if (!manager) return 'max_user_not_channel_admin';
+      return {
+        ...details,
+        accessToken: AuthService.fixedEncryption(
+          JSON.stringify({ chatId: input.chatId, tokenSource: 'juls' })
+        ),
+      };
+    } catch (error) {
+      if (error instanceof RefreshToken) return 'max_bot_token_invalid';
+      return 'max_channel_verification_failed';
+    }
+  }
+
+  private async verifyChannel(
+    chatId: string,
+    token: string
+  ): Promise<AuthTokenDetails | string> {
+    const chat = await this.api<{
+      chat_id: number;
+      type: string;
+      status: string;
+      title: string;
+      icon?: { url?: string };
+    }>(`/chats/${chatId}`, token);
+    if (
+      String(chat.chat_id) !== chatId ||
+      chat.type !== 'channel' ||
+      chat.status !== 'active'
+    ) {
+      return 'max_channel_invalid';
+    }
+    const member = await this.api<{
+      is_admin: boolean;
+      is_owner: boolean;
+      permissions?: string[];
+    }>(`/chats/${chatId}/members/me`, token);
+    if (
+      !member.is_owner &&
+      !(
+        member.is_admin &&
+        member.permissions?.some((permission) =>
+          ['write', 'post_edit_delete_message'].includes(permission)
+        )
+      )
+    ) {
+      return 'max_bot_publish_permission_missing';
+    }
+    return {
+      id: `max:${chatId}`,
+      name: chat.title || 'MAX',
+      accessToken: '',
+      refreshToken: '',
+      expiresIn: 0,
+      picture: chat.icon?.url || '',
+      username: '',
+    };
   }
 
   // Never include raw upstream errors: they may echo the bot token or upload URL.
@@ -297,16 +381,14 @@ export class MaxProvider extends SocialAbstract implements SocialProvider {
     accessToken: string,
     posts: PostDetails[]
   ): Promise<PostResponse[]> {
-    let credentials: Credentials;
+    let stored: StoredCredentials;
     try {
-      credentials = JSON.parse(AuthService.fixedDecryption(accessToken));
+      stored = JSON.parse(AuthService.fixedDecryption(accessToken));
     } catch {
       this.fail('Подключите канал MAX заново.');
     }
-    if (
-      !this.validCredentials(credentials) ||
-      id !== `max:${credentials.chatId}`
-    )
+    const credentials = this.resolveCredentials(stored!);
+    if (!credentials || id !== `max:${credentials.chatId}`)
       this.fail('Данные подключения MAX не соответствуют каналу.');
     const validity = await this.checkValidity(
       posts.map((post) => post.media || [])

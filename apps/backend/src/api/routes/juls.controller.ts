@@ -17,6 +17,7 @@ import { JulsAuthGuard } from '@gitroom/backend/services/juls/juls-auth.guard';
 import { JulsWorkspaceService } from '@gitroom/backend/services/juls/juls-workspace.service';
 import {
   JulsHandoffDto,
+  JulsMaxChannelDto,
   JulsProvisionDto,
   JulsWorkspaceDto,
 } from '@gitroom/backend/services/juls/juls.dto';
@@ -49,6 +50,13 @@ export class JulsController {
   @Header('Cache-Control', 'no-store')
   handoff(@Body() body: JulsHandoffDto) {
     return this.workspaces.handoff(body);
+  }
+
+  @Post('/max-channel/connect')
+  @HttpCode(200)
+  @Header('Cache-Control', 'no-store')
+  connectMaxChannel(@Body() body: JulsMaxChannelDto) {
+    return this.workspaces.connectMaxChannel(body);
   }
 
   @Post('/revoke')
