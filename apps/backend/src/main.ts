@@ -20,7 +20,13 @@ import { HttpExceptionFilter } from '@gitroom/nestjs-libraries/services/exceptio
 import { ConfigurationChecker } from '@gitroom/helpers/configuration/configuration.checker';
 import { startMcp } from '@gitroom/nestjs-libraries/chat/start.mcp';
 
+declare global {
+  var postizBackendStartupComplete: (() => void) | undefined;
+}
+
 async function start() {
+  Logger.log('Starting backend bootstrap', 'BackendBootstrap');
+
   const app = await NestFactory.create(AppModule, {
     rawBody: true,
     cors: {
@@ -49,8 +55,10 @@ async function start() {
       ],
     },
   });
+  Logger.log('Nest application created', 'BackendBootstrap');
 
   await startMcp(app);
+  Logger.log('MCP registered', 'BackendBootstrap');
 
   app.useGlobalPipes(
     new ValidationPipe({
@@ -73,7 +81,9 @@ async function start() {
   const port = process.env.PORT || 3000;
 
   try {
+    Logger.log(`Listening on port ${port}`, 'BackendBootstrap');
     await app.listen(port);
+    globalThis.postizBackendStartupComplete?.();
     console.log('Backend started successfully on port ' + port);
 
     checkConfiguration(); // Do this last, so that users will see obvious issues at the end of the startup log without having to scroll up.
@@ -81,6 +91,7 @@ async function start() {
     Logger.log(`🚀 Backend is running on: http://localhost:${port}`);
   } catch (e) {
     Logger.error(`Backend failed to start on port ${port}`, e);
+    process.exit(1);
   }
 }
 
