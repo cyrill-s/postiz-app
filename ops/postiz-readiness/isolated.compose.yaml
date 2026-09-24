@@ -1,0 +1,129 @@
+services:
+  app:
+    image: local/postiz:readiness-97
+    restart: 'no'
+    # The production CMD uses pnpm dlx; keep this network isolated and use
+    # the already installed Prisma CLI for the disposable schema.
+    command:
+      - sh
+      - -c
+      - >-
+        nginx && /app/node_modules/.bin/prisma db push --accept-data-loss
+        --schema /app/libraries/nestjs-libraries/src/database/prisma/schema.prisma
+        && pm2 start /app/ecosystem.config.cjs && pm2 logs
+    environment:
+      MAIN_URL: http://localhost:5000
+      FRONTEND_URL: http://localhost:5000
+      NEXT_PUBLIC_BACKEND_URL: http://localhost:5000/api
+      BACKEND_INTERNAL_URL: http://localhost:3000
+      JWT_SECRET: isolated-postiz-readiness-97-only
+      DATABASE_URL: postgresql://postiz:isolated@postgres:5432/postiz
+      REDIS_URL: redis://redis:6379
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_LOW_MEMORY: 'true'
+      IS_GENERAL: 'true'
+      DISABLE_REGISTRATION: 'true'
+      RUN_CRON: 'false'
+      STORAGE_PROVIDER: local
+      UPLOAD_DIRECTORY: /uploads
+      NEXT_PUBLIC_UPLOAD_DIRECTORY: /uploads
+      NODE_ENV: production
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      temporal:
+        condition: service_healthy
+    networks: [isolated]
+    mem_limit: 3g
+    cpus: 1.25
+
+  postgres:
+    image: postgres:17-alpine
+    restart: 'no'
+    environment:
+      POSTGRES_USER: postiz
+      POSTGRES_PASSWORD: isolated
+      POSTGRES_DB: postiz
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postiz -d postiz']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [isolated]
+
+  redis:
+    image: redis:7.2-alpine
+    restart: 'no'
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [isolated]
+
+  temporal-postgres:
+    image: postgres:16-alpine
+    restart: 'no'
+    environment:
+      POSTGRES_USER: temporal
+      POSTGRES_PASSWORD: isolated
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U temporal']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [isolated]
+
+  temporal:
+    image: temporalio/auto-setup:1.28.1
+    restart: 'no'
+    volumes:
+      - ./dynamicconfig:/etc/temporal/config/dynamicconfig:ro
+    environment:
+      DB: postgres12
+      DB_PORT: '5432'
+      POSTGRES_USER: temporal
+      POSTGRES_PWD: isolated
+      POSTGRES_SEEDS: temporal-postgres
+      ENABLE_ES: 'true'
+      ES_SEEDS: temporal-elasticsearch
+      ES_VERSION: v7
+      DYNAMIC_CONFIG_FILE_PATH: config/dynamicconfig/development-sql.yaml
+      TEMPORAL_NAMESPACE: default
+    depends_on:
+      temporal-postgres:
+        condition: service_healthy
+      temporal-elasticsearch:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'temporal', 'operator', 'cluster', 'health', '--address', 'temporal:7233']
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 45s
+    networks: [isolated]
+
+  temporal-elasticsearch:
+    image: elasticsearch:7.17.27
+    restart: 'no'
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: 'false'
+      ES_JAVA_OPTS: -Xms256m -Xmx256m
+      cluster.routing.allocation.disk.threshold_enabled: 'false'
+    mem_limit: 768m
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - "curl -fsS 'http://127.0.0.1:9200/_cluster/health?wait_for_status=yellow&timeout=5s' >/dev/null"
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 1m
+    networks: [isolated]
+
+networks:
+  isolated:
+    internal: true
