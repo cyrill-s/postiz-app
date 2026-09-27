@@ -1,4 +1,4 @@
-import { FC, useCallback, useMemo, useState } from 'react';
+import { FC, useCallback, useMemo } from 'react';
 import { Integration } from '@prisma/client';
 import useSWR from 'swr';
 import { useFetch } from '@gitroom/helpers/utils/custom.fetch';
@@ -8,6 +8,8 @@ import { useT } from '@gitroom/react/translation/get.transation.service.client';
 
 interface AnalyticsDataItem {
   label: string;
+  description?: string;
+  type?: 'snapshot';
   data: Array<{ total: number; date: string }>;
   average?: boolean;
   percentageChange?: number;
@@ -56,7 +58,7 @@ const AnalyticsCard: FC<{
   const colorVariants = ['purple', 'green', 'blue'] as const;
   const color = colorVariants[index % colorVariants.length];
 
-  const hasDataPoints = item.data.length >= 1;
+  const hasDataPoints = item.type !== 'snapshot' && item.data.length >= 1;
 
   return (
     <div className="group relative">
@@ -86,10 +88,16 @@ const AnalyticsCard: FC<{
               {item.label}
             </span>
           </div>
-          {item.percentageChange !== undefined && (
+          {item.type !== 'snapshot' && item.percentageChange !== undefined && (
             <TrendIndicator value={item.percentageChange} average={item.average} />
           )}
         </div>
+
+        {item.description && (
+          <p className="px-[16px] text-[13px] text-newTableText">
+            {item.description}
+          </p>
+        )}
 
         {/* Content */}
         {hasDataPoints ? (
@@ -172,19 +180,15 @@ export const RenderAnalytics: FC<{
   date: number;
 }> = (props) => {
   const { integration, date } = props;
-  const [loading, setLoading] = useState(true);
   const fetch = useFetch();
 
   const load = useCallback(async () => {
-    setLoading(true);
-    const load = (
+    return (
       await fetch(`/analytics/${integration.id}?date=${date}`)
     ).json();
-    setLoading(false);
-    return load;
-  }, [integration, date]);
+  }, [fetch, integration.id, date]);
 
-  const { data } = useSWR(`/analytics-${integration?.id}-${date}`, load, {
+  const { data, isLoading } = useSWR(`/analytics-${integration?.id}-${date}`, load, {
     refreshInterval: 0,
     refreshWhenHidden: false,
     revalidateOnFocus: false,
@@ -219,7 +223,7 @@ export const RenderAnalytics: FC<{
   const totals = useMemo(() => {
     return data?.map((p: AnalyticsDataItem) => {
       const value =
-        (p?.data.reduce((acc: number, curr: { total: number }) => acc + curr.total, 0) || 0) /
+        (p?.data.reduce((acc: number, curr: { total: number }) => acc + Number(curr.total), 0) || 0) /
         (p.average ? p.data.length : 1);
       if (p.average) {
         return value.toFixed(2) + '%';
@@ -228,7 +232,7 @@ export const RenderAnalytics: FC<{
     });
   }, [data]);
 
-  if (loading) {
+  if (isLoading) {
     return (
       <div className="flex items-center justify-center py-[48px]">
         <LoadingComponent />

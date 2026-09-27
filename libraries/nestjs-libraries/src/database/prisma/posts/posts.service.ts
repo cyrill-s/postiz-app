@@ -856,13 +856,15 @@ export class PostsService {
           settings
         );
 
-        const emptyContent = (post.value || []).some((a) => {
+        const emptyContent = (post.value || []).some((a, index) => {
           const compiled = supportsSocialFormatting(
             integration.providerIdentifier
           )
             ? compileSocialContent(
                 integration.providerIdentifier,
-                a.content || ''
+                a.content || '',
+                undefined,
+                { comment: index > 0 }
               )
             : undefined;
           const strip =
@@ -880,7 +882,9 @@ export class PostsService {
           )
             ? compileSocialContent(
                 integration.providerIdentifier,
-                a.content || ''
+                a.content || '',
+                undefined,
+                { comment: index > 0 }
               )
             : undefined;
           const strip =

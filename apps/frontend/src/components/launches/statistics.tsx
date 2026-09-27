@@ -9,6 +9,8 @@ import { MissingReleaseModal } from '@gitroom/frontend/components/launches/missi
 
 interface AnalyticsData {
   label: string;
+  description?: string;
+  type?: 'snapshot';
   data: Array<{ total: number; date: string }>;
   percentageChange: number;
   average?: boolean;
@@ -128,11 +130,18 @@ export const StatisticsModal: FC<{
                             </span>
                           </div>
                         </div>
-                        <div className="flex-1 px-[12px] py-[8px]">
-                          <div className="h-[120px] relative">
-                            <ChartSocial data={p.data} color={color} key={`chart-${index}`} />
+                        {p.description && (
+                          <p className="px-[16px] pb-[14px] text-[13px] text-newTableText">
+                            {p.description}
+                          </p>
+                        )}
+                        {p.type !== 'snapshot' && (
+                          <div className="flex-1 px-[12px] py-[8px]">
+                            <div className="h-[120px] relative">
+                              <ChartSocial data={p.data} color={color} key={`chart-${index}`} />
+                            </div>
                           </div>
-                        </div>
+                        )}
                         <div className="px-[16px] pb-[14px]">
                           <div className="text-[36px] leading-[42px] font-semibold tracking-tight">
                             {totals[index]}

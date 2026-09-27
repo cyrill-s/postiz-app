@@ -1,0 +1,9 @@
+ARG POSTIZ_BASE_IMAGE=local/postiz:readiness-97-b60c6c02
+FROM ${POSTIZ_BASE_IMAGE}
+
+# Build artifacts are produced locally. Preserve Linux dependencies, readiness,
+# Temporal workflow bundle, media configuration and the MAX CA from production.
+RUN rm -rf /app/apps/frontend/.next
+COPY frontend-next/ /app/apps/frontend/.next/
+COPY overlay/ /app/
+COPY public/ /app/apps/frontend/public/

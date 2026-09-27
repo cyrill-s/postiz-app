@@ -646,9 +646,11 @@ export const Editor: FC<{
 
   const valueWithoutHtml = useMemo(() => {
     return supportsSocialFormatting(identifier)
-      ? compileSocialContent(identifier, props.value || '').text
+      ? compileSocialContent(identifier, props.value || '', undefined, {
+          comment: num > 0,
+        }).text
       : stripHtmlValidation('normal', props.value || '', true);
-  }, [props.value, identifier]);
+  }, [props.value, identifier, num]);
 
   const addText = useCallback(
     (emoji: string) => {
@@ -760,8 +762,12 @@ export const Editor: FC<{
                       chars={chars}
                       totalChars={
                         supportsSocialFormatting(identifier)
-                          ? compileSocialContent(identifier, props.value || '')
-                              .length
+                          ? compileSocialContent(
+                              identifier,
+                              props.value || '',
+                              undefined,
+                              { comment: num > 0 }
+                            ).length
                           : valueWithoutHtml.length
                       }
                       totalAllowedChars={props.totalChars}
