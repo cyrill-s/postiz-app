@@ -52,6 +52,9 @@ export interface IAuthenticator {
 
 export interface AnalyticsData {
   label: string;
+  description?: string;
+  /** A current total, not a historical series or a period-over-period change. */
+  type?: 'snapshot';
   data: Array<{ total: string; date: string }>;
   percentageChange: number;
 }

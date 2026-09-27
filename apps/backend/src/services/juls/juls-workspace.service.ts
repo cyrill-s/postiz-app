@@ -250,7 +250,7 @@ export class JulsWorkspaceService {
       chatId: input.channelId,
       maxUserId: input.maxUserId,
     });
-    if (typeof verified === 'string') fail(verified, 400);
+    if (typeof verified === 'string') return fail(verified, 400);
 
     return this.locked(input.externalWorkspaceId, async (tx, workspace) => {
       await this.active(tx, workspace);

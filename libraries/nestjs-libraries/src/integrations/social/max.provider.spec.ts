@@ -38,6 +38,16 @@ describe('MAX channels', () => {
   const publish = (posts: any[] = [post], id = 'max:-123456') =>
     provider.post(id, encrypted, posts);
   const sent = (index: number) => JSON.parse(mock.mock.calls[index][1].body);
+  const published = (extra = {}) => ({
+    body: { mid: 'mid.root' },
+    recipient: { chat_id: -123456, chat_type: 'channel' },
+    timestamp: Date.parse('2026-09-25T12:00:00Z'),
+    stat: { views: 42 },
+    url: 'https://max.ru/channel/post',
+    ...extra,
+  });
+  const comment = (posts: any[] = [post], root = 'mid.root', last?: string) =>
+    provider.comment('max:-123456', root, last, encrypted, posts);
   const media = (type: 'image' | 'video') => ({
     type,
     path: `https://example.org/media.${type === 'image' ? 'png' : 'mp4'}`,
@@ -56,6 +66,7 @@ describe('MAX channels', () => {
     encrypted = AuthService.fixedEncryption(JSON.stringify(credentials));
   });
   afterEach(() => {
+    jest.useRealTimers();
     delete process.env.JULS_MAX_BOT_TOKEN;
     jest.restoreAllMocks();
     jest.clearAllMocks();
@@ -301,5 +312,353 @@ describe('MAX channels', () => {
     expect(mock).toHaveBeenCalledTimes(1);
     reply({});
     await expect(publish()).rejects.toBeInstanceOf(BadBody);
+  });
+
+  it('accepts a main post with text-only comments, rejecting media on any comment', async () => {
+    await expect(
+      provider.checkValidity([[media('image')], [], []])
+    ).resolves.toBe(true);
+    await expect(
+      provider.checkValidity([[], [media('image')]])
+    ).resolves.toContain('только текст');
+    await expect(
+      provider.checkValidity([[], [], [media('video')]])
+    ).resolves.toContain('только текст');
+  });
+
+  it('sends every scheduled comment under the original post and returns its own release ID', async () => {
+    for (const mid of ['mid.first', 'mid.second']) {
+      reply({ messages: [published()] });
+      reply({ message: { body: { mid } } });
+    }
+    expect(await comment()).toEqual([
+      {
+        id: post.id,
+        postId: 'mid.first',
+        releaseURL: 'https://max.ru/channel/post',
+        status: 'completed',
+      },
+    ]);
+    await comment([{ ...post, id: 'comment-2' }], 'mid.root', 'mid.first');
+    for (const index of [1, 3]) {
+      expect(mock.mock.calls[index][0]).toBe(
+        'https://platform-api2.max.ru/messages/mid.root/comments'
+      );
+      expect(sent(index)).toEqual({ text: post.message });
+      expect(mock.mock.calls[index][1].headers.Authorization).toBe(
+        credentials.token
+      );
+    }
+  });
+
+  it('compiles MAX comments with supported formatting and plain link destinations', async () => {
+    reply({ messages: [published({ url: undefined })] });
+    reply({ message: { body: { mid: 'mid.comment' } } });
+    const sourceHtml = '<b>Привет</b> <a href="https://example.org">сайт</a>';
+    expect(await comment([{ ...post, sourceHtml }])).toMatchObject([
+      { releaseURL: '' },
+    ]);
+    expect(sent(1)).toEqual({
+      text: '<b>Привет</b> сайт (https://example.org)',
+      format: 'html',
+    });
+  });
+
+  it.each(
+    [
+      [],
+      [post, post],
+      [{ ...post, message: '' }],
+      [{ ...post, media: [media('image')] }],
+      [{ ...post, media: [media('video')] }],
+      [{ ...post, message: 'a'.repeat(4001) }],
+      [{ ...post, sourceHtml: '<p> </p>' }],
+      [
+        {
+          ...post,
+          sourceHtml: `<a href="https://example.org">${'a'.repeat(3990)}</a>`,
+        },
+      ],
+    ].map((posts) => ({ posts }))
+  )('rejects invalid comments before contacting MAX: %j', async ({ posts }) => {
+    await expect(comment(posts)).rejects.toBeInstanceOf(BadBody);
+    expect(mock).not.toHaveBeenCalled();
+  });
+
+  it('counts emoji as characters instead of UTF-16 code units', async () => {
+    reply({ messages: [published()] });
+    reply({ message: { body: { mid: 'mid.emoji' } } });
+    await expect(
+      comment([{ ...post, message: '😀'.repeat(4000) }])
+    ).resolves.toHaveLength(1);
+  });
+
+  it('rejects an invalid post ID before requesting MAX', async () => {
+    await expect(comment([post], '../other?token=bad')).rejects.toBeInstanceOf(
+      BadBody
+    );
+    expect(mock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { messages: [] },
+    {
+      messages: [
+        published({ recipient: { chat_id: -999, chat_type: 'channel' } }),
+      ],
+    },
+    {
+      messages: [
+        published({ recipient: { chat_id: -123456, chat_type: 'chat' } }),
+      ],
+    },
+  ])(
+    'never comments on a missing post or another channel: %j',
+    async (data) => {
+      reply(data);
+      await expect(comment()).rejects.toBeInstanceOf(BadBody);
+      expect(mock).toHaveBeenCalledTimes(1);
+    }
+  );
+
+  it.each([403, 500])(
+    'does not repeat rejected or ambiguous comment sends (HTTP %s)',
+    async (status) => {
+      reply({ messages: [published()] });
+      reply({ message: credentials.token }, status);
+      await expect(comment()).rejects.toBeInstanceOf(BadBody);
+      expect(mock).toHaveBeenCalledTimes(2);
+    }
+  );
+
+  it('explains disabled channel comments without retrying the rejected send', async () => {
+    reply({ messages: [published()] });
+    reply({ code: 'proto.payload', message: 'comments.comments_disabled' }, 400);
+    await expect(comment()).rejects.toThrow(
+      'MAX: комментарии в канале выключены. Включите их в настройках канала.'
+    );
+    expect(mock).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects a missing comment ID without repeating the send', async () => {
+    reply({ messages: [published()] });
+    reply({});
+    await expect(comment()).rejects.toThrow('ID комментария');
+    expect(mock).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not repeat a comment send after a network failure', async () => {
+    reply({ messages: [published()] });
+    mock.mockRejectedValueOnce(new Error(credentials.token));
+    try {
+      await comment();
+      throw new Error('Expected failure');
+    } catch (error) {
+      expect(error).toBeInstanceOf(BadBody);
+      expect(JSON.stringify(error)).not.toContain(credentials.token);
+    }
+    expect(mock).toHaveBeenCalledTimes(2);
+  });
+
+  it('uses a lifetime snapshot for post views irrespective of the selected date range', async () => {
+    for (const days of [7, 30, 90]) {
+      reply({ messages: [published()] });
+      expect(
+        await provider.postAnalytics('max:-123456', encrypted, 'mid.root', days)
+      ).toMatchObject([
+        {
+          label: 'Просмотры',
+          type: 'snapshot',
+          percentageChange: 0,
+          data: [{ total: '42' }],
+        },
+      ]);
+    }
+    expect(mock.mock.calls[0][0]).toBe(
+      'https://platform-api2.max.ru/messages?message_ids=mid.root'
+    );
+  });
+
+  it.each([
+    undefined,
+    null,
+    {},
+    { views: null },
+    { views: -1 },
+    { views: '42' },
+  ])(
+    'omits unavailable or invalid views instead of inventing zero: %j',
+    async (stat) => {
+      reply({ messages: [published({ stat })] });
+      expect(
+        await provider.postAnalytics('max:-123456', encrypted, 'mid.root', 7)
+      ).toEqual([]);
+    }
+  );
+
+  it('preserves a real zero view count', async () => {
+    reply({ messages: [published({ stat: { views: 0 } })] });
+    expect(
+      await provider.postAnalytics('max:-123456', encrypted, 'mid.root', 7)
+    ).toMatchObject([{ data: [{ total: '0' }] }]);
+  });
+
+  it('uses the runtime Juls token for both comments and analytics', async () => {
+    process.env.JULS_MAX_BOT_TOKEN = julsToken;
+    encrypted = AuthService.fixedEncryption(
+      JSON.stringify({ chatId: credentials.chatId, tokenSource: 'juls' })
+    );
+    reply({ messages: [published()] });
+    reply({ message: { body: { mid: 'mid.juls-comment' } } });
+    await comment();
+    reply({ messages: [published()] });
+    await provider.postAnalytics('max:-123456', encrypted, 'mid.root', 7);
+    expect(
+      mock.mock.calls.every(
+        ([, init]) => init.headers.Authorization === julsToken
+      )
+    ).toBe(true);
+  });
+
+  it('rejects channel mismatches for comments and both analytics endpoints before API calls', async () => {
+    await expect(
+      provider.comment('max:-999', 'mid.root', undefined, encrypted, [post])
+    ).rejects.toBeInstanceOf(BadBody);
+    await expect(
+      provider.postAnalytics('max:-999', encrypted, 'mid.root', 7)
+    ).rejects.toBeInstanceOf(BadBody);
+    await expect(
+      provider.analytics('max:-999', encrypted, 7)
+    ).rejects.toBeInstanceOf(BadBody);
+    expect(mock).not.toHaveBeenCalled();
+  });
+
+  it('refuses statistics for a post from another channel, including a shared-bot channel', async () => {
+    reply({
+      messages: [
+        published({ recipient: { chat_id: -999, chat_type: 'channel' } }),
+      ],
+    });
+    await expect(
+      provider.postAnalytics('max:-123456', encrypted, 'mid.root', 7)
+    ).rejects.toBeInstanceOf(BadBody);
+  });
+
+  it('does not retry a read-only permission failure in analytics', async () => {
+    reply({ message: credentials.token }, 403);
+    await expect(
+      provider.analytics('max:-123456', encrypted, 7)
+    ).rejects.toThrow('чтение');
+    expect(mock).toHaveBeenCalledTimes(1);
+  });
+
+  it('paginates channel posts with overlap and deduplicates boundary posts', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-09-27T12:00:00Z'));
+    channel({ participants_count: 15 });
+    const messages = Array.from({ length: 100 }, (_, i) =>
+      published({
+        body: { mid: `mid.${i}` },
+        timestamp: Date.parse('2026-09-26T12:00:00Z') - i * 1000,
+        stat: { views: 2 },
+      })
+    );
+    reply({ messages });
+    reply({
+      messages: [
+        messages[99],
+        published({ body: { mid: 'mid.old' }, stat: { views: 5 } }),
+      ],
+    });
+    expect(await provider.analytics('max:-123456', encrypted, 7)).toMatchObject(
+      [
+        {
+          label: 'Участники канала',
+          type: 'snapshot',
+          data: [{ total: '15' }],
+        },
+        { label: 'Публикации', type: 'snapshot', data: [{ total: '101' }] },
+        {
+          label: 'Просмотры публикаций',
+          type: 'snapshot',
+          data: [{ total: '205' }],
+        },
+      ]
+    );
+    const first = new URL(mock.mock.calls[1][0]);
+    const second = new URL(mock.mock.calls[2][0]);
+    expect(first.searchParams.get('count')).toBe('100');
+    expect(first.searchParams.get('from')).toBe(String(Date.now()));
+    expect(new Date(Number(first.searchParams.get('to'))).getDate()).toBe(21);
+    expect(second.searchParams.get('from')).toBe(
+      String(messages[99].timestamp)
+    );
+    expect(second.searchParams.get('to')).toBe(first.searchParams.get('to'));
+  });
+
+  it('returns zero publications for an empty period, without a fabricated follower count', async () => {
+    channel();
+    reply({ messages: [] });
+    expect(await provider.analytics('max:-123456', encrypted, 7)).toMatchObject(
+      [
+        { label: 'Публикации', data: [{ total: '0' }] },
+        { label: 'Просмотры публикаций', data: [{ total: '0' }] },
+      ]
+    );
+  });
+
+  it('omits a partial views total when any post lacks statistics', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-09-27T12:00:00Z'));
+    channel({ participants_count: 0 });
+    reply({
+      messages: [
+        published(),
+        published({ body: { mid: 'mid.private' }, stat: null }),
+      ],
+    });
+    expect(await provider.analytics('max:-123456', encrypted, 7)).toMatchObject(
+      [
+        { label: 'Участники канала', data: [{ total: '0' }] },
+        { label: 'Публикации', data: [{ total: '2' }] },
+      ]
+    );
+  });
+
+  it('does not turn a malformed messages response into zero activity', async () => {
+    channel();
+    reply({});
+    await expect(
+      provider.analytics('max:-123456', encrypted, 7)
+    ).rejects.toBeInstanceOf(BadBody);
+  });
+
+  it('fails instead of returning truncated totals when pagination stops advancing', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-09-27T12:00:00Z'));
+    channel();
+    const messages = Array.from({ length: 100 }, (_, i) =>
+      published({ body: { mid: `mid.${i}` } })
+    );
+    reply({ messages });
+    reply({ messages });
+    await expect(
+      provider.analytics('max:-123456', encrypted, 7)
+    ).rejects.toBeInstanceOf(BadBody);
+    expect(mock).toHaveBeenCalledTimes(3);
+  });
+
+  it.each([NaN, -7, 0, 0.5, 91])(
+    'rejects invalid analytics ranges before API calls: %s',
+    async (days) => {
+      await expect(
+        provider.analytics('max:-123456', encrypted, days)
+      ).rejects.toBeInstanceOf(BadBody);
+      expect(mock).not.toHaveBeenCalled();
+    }
+  );
+
+  it('preserves auth failures from analytics so Postiz can reconnect without leaking secrets', async () => {
+    reply({ message: credentials.token }, 401);
+    await expect(
+      provider.postAnalytics('max:-123456', encrypted, 'mid.root', 7)
+    ).rejects.toBeInstanceOf(RefreshToken);
   });
 });

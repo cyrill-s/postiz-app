@@ -93,7 +93,8 @@ export const safeSocialLink = (href: string) =>
 export function compileSocialContent(
   platform: string,
   source: string,
-  mention?: (id: string, name: string) => string
+  mention?: (id: string, name: string) => string,
+  options: { comment?: boolean } = {}
 ): CompiledSocialContent {
   const rich = platform === 'telegram' || platform === 'max';
   function children(
@@ -175,7 +176,7 @@ export function compileSocialContent(
     if (tag === 'a') {
       const href = attribute(element, 'href') || '';
       if (!safeSocialLink(href)) return body;
-      if (rich)
+      if (rich && !(platform === 'max' && options.comment))
         return {
           ...body,
           message: `<a href="${escapeSocialHtml(href)}">${body.message}</a>`,

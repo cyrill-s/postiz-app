@@ -32,7 +32,9 @@ export function FormattedPreview({
         {integration?.name || t('global_edit', 'Global edit')}
       </div>
       {value.map((post, index) => {
-        const compiled = compileSocialContent(platform, post.content);
+        const compiled = compileSocialContent(platform, post.content, undefined, {
+          comment: index > 0,
+        });
         const hasMedia = !!post.image?.length;
         const limit = socialContentLimit(
           platform,

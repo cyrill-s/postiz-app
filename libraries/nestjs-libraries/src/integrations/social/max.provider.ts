@@ -10,6 +10,7 @@ import {
   ValidityMedia,
 } from '../social.abstract';
 import {
+  AnalyticsData,
   AuthTokenDetails,
   PostDetails,
   PostResponse,
@@ -17,6 +18,7 @@ import {
 } from './social.integrations.interface';
 import FormDataUpload from 'form-data';
 import { PassThrough } from 'stream';
+import dayjs from 'dayjs';
 
 const API = 'https://platform-api2.max.ru';
 const MEDIA_NOTICE =
@@ -25,6 +27,15 @@ type Credentials = { chatId: string; token: string };
 type JulsCredentials = { chatId: string; tokenSource: 'juls' };
 type StoredCredentials = Credentials | JulsCredentials;
 type Attachment = { type: 'image' | 'video'; payload: Record<string, unknown> };
+type MaxMessage = {
+  recipient: { chat_id: number | string; chat_type: string };
+  timestamp: number;
+  body: { mid: string } | null;
+  stat?: { views?: number } | null;
+  url?: string;
+};
+const COMMENT_NOTICE =
+  'MAX: комментарии поддерживают только текст, без фото и видео.';
 
 export class MaxProvider extends SocialAbstract implements SocialProvider {
   identifier = 'max';
@@ -34,7 +45,7 @@ export class MaxProvider extends SocialAbstract implements SocialProvider {
   editor = 'normal' as const;
   override maxConcurrentJob = 1;
   toolTip =
-    'Публикация в канал MAX через собственного бота с правом публикации.';
+    'Посты, комментарии и статистика канала MAX через бота с правами чтения и публикации.';
 
   maxLength() {
     return 4000;
@@ -54,7 +65,7 @@ export class MaxProvider extends SocialAbstract implements SocialProvider {
         label: 'ID канала (chat_id)',
         type: 'text' as const,
         validation: '/^-?[1-9][0-9]{0,15}$/',
-        hint: 'Добавьте бота администратором с правом публикации. Укажите chat_id из события bot_added вашего бота. Инструкция: dev.max.ru/docs-api, раздел «Получение chat_id».',
+        hint: 'Добавьте бота администратором с правами чтения и публикации. Для комментариев включите их в настройках канала. Укажите chat_id из события bot_added вашего бота.',
       },
     ];
   }
@@ -109,6 +120,40 @@ export class MaxProvider extends SocialAbstract implements SocialProvider {
 
   private fail(message: string): never {
     throw new BadBody(this.identifier, '{}', '{}', message);
+  }
+
+  private credentials(id: string, accessToken: string): Credentials {
+    let stored: StoredCredentials;
+    try {
+      stored = JSON.parse(AuthService.fixedDecryption(accessToken));
+    } catch {
+      this.fail('Подключите канал MAX заново.');
+    }
+    const credentials = this.resolveCredentials(stored);
+    if (!credentials || id !== `max:${credentials.chatId}`)
+      this.fail('Данные подключения MAX не соответствуют каналу.');
+    return credentials;
+  }
+
+  private messageId(id: string): string {
+    if (typeof id !== 'string' || !/^(mid\.)?[a-zA-Z0-9_-]+$/.test(id))
+      this.fail('Некорректный ID публикации MAX.');
+    return encodeURIComponent(id);
+  }
+
+  private async readPost(credentials: Credentials, postId: string) {
+    const result = await this.api<{ messages: MaxMessage[] }>(
+      `/messages?message_ids=${this.messageId(postId)}`,
+      credentials.token
+    );
+    const message = result.messages?.find((item) => item.body?.mid === postId);
+    if (
+      !message ||
+      String(message.recipient?.chat_id) !== credentials.chatId ||
+      message.recipient?.chat_type !== 'channel'
+    )
+      this.fail('Публикация MAX не найдена в подключённом канале.');
+    return message;
   }
 
   async authenticate(params: {
@@ -262,8 +307,14 @@ export class MaxProvider extends SocialAbstract implements SocialProvider {
           '{}',
           'Токен бота MAX недействителен. Подключите канал заново.'
         );
+      if (data.message === 'comments.comments_disabled')
+        this.fail(
+          'MAX: комментарии в канале выключены. Включите их в настройках канала.'
+        );
       if (response.status === 403)
-        this.fail('Боту MAX не хватает прав. Разрешите публикацию в канале.');
+        this.fail(
+          'Боту MAX не хватает прав. Разрешите чтение и публикацию в канале; для комментариев включите их в настройках канала.'
+        );
       if (
         attempt < 5 &&
         (response.status === 429 || data.code === 'attachment.not.ready')
@@ -283,10 +334,28 @@ export class MaxProvider extends SocialAbstract implements SocialProvider {
   override async checkValidity(
     posts: ValidityMedia[][]
   ): Promise<string | true> {
-    if (posts.length !== 1)
-      return 'MAX: одна публикация без цепочки комментариев.';
-    if (posts.some((post) => post.length > 10)) return MEDIA_NOTICE;
+    if (!posts.length) return 'Добавьте публикацию для MAX.';
+    if (posts[0].length > 10) return MEDIA_NOTICE;
+    if (posts.slice(1).some((post) => post.length)) return COMMENT_NOTICE;
     return true;
+  }
+
+  private content(post: PostDetails, comment = false) {
+    if (!post) this.fail('Добавьте текст или медиафайл для MAX.');
+    if (comment && post.media?.length) this.fail(COMMENT_NOTICE);
+    const compiled =
+      post.sourceHtml === undefined
+        ? undefined
+        : compileSocialContent('max', post.sourceHtml, undefined, { comment });
+    const text = compiled?.text ?? post.message;
+    if ((compiled?.length ?? Array.from(text).length) > this.maxLength())
+      this.fail('MAX: не более 4000 символов в публикации или комментарии.');
+    if (!text.trim() && !post.media?.length)
+      this.fail('Добавьте текст или медиафайл для MAX.');
+    return {
+      text: (compiled?.message ?? post.message) || null,
+      ...(compiled ? { format: 'html' } : {}),
+    };
   }
 
   private async upload(
@@ -381,36 +450,23 @@ export class MaxProvider extends SocialAbstract implements SocialProvider {
     accessToken: string,
     posts: PostDetails[]
   ): Promise<PostResponse[]> {
-    let stored: StoredCredentials;
-    try {
-      stored = JSON.parse(AuthService.fixedDecryption(accessToken));
-    } catch {
-      this.fail('Подключите канал MAX заново.');
-    }
-    const credentials = this.resolveCredentials(stored!);
-    if (!credentials || id !== `max:${credentials.chatId}`)
-      this.fail('Данные подключения MAX не соответствуют каналу.');
+    const credentials = this.credentials(id, accessToken);
+    // Temporal sends comments separately, preserving their configured delays.
+    if (posts.length !== 1)
+      this.fail('MAX: отправляйте комментарии отдельно от публикации.');
     const validity = await this.checkValidity(
       posts.map((post) => post.media || [])
     );
     if (validity !== true) this.fail(validity);
     const post = posts[0];
-    if (
-      (post.sourceHtml !== undefined
-        ? compileSocialContent('max', post.sourceHtml).length
-        : post.message.length) > this.maxLength()
-    )
-      this.fail('MAX: не более 4000 символов в публикации.');
-    if (!post.message.trim() && !post.media?.length)
-      this.fail('Добавьте текст или медиафайл для MAX.');
+    const content = this.content(post);
     const attachments: Attachment[] = [];
     for (const media of post.media || [])
       attachments.push(await this.upload(media, credentials.token));
     const result = await this.api<{
       message?: { body?: { mid?: string }; url?: string };
     }>(`/messages?chat_id=${credentials.chatId}`, credentials.token, {
-      text: post.message || null,
-      ...(post.sourceHtml !== undefined ? { format: 'html' } : {}),
+      ...content,
       ...(attachments.length ? { attachments } : {}),
     });
     if (!result.message?.body?.mid)
@@ -425,5 +481,166 @@ export class MaxProvider extends SocialAbstract implements SocialProvider {
         status: 'completed',
       },
     ];
+  }
+
+  async comment(
+    id: string,
+    postId: string,
+    _lastCommentId: string | undefined,
+    accessToken: string,
+    posts: PostDetails[]
+  ): Promise<PostResponse[]> {
+    const credentials = this.credentials(id, accessToken);
+    if (posts.length !== 1)
+      this.fail('MAX: отправляйте по одному комментарию.');
+    const content = this.content(posts[0], true);
+    // A shared Juls bot may administer several channels: check the target first.
+    const root = await this.readPost(credentials, postId);
+    const result = await this.api<{ message?: { body?: { mid?: string } } }>(
+      `/messages/${this.messageId(postId)}/comments`,
+      credentials.token,
+      content
+    );
+    if (!result.message?.body?.mid)
+      this.fail(
+        'MAX не вернул ID комментария. Проверьте пост перед повторной отправкой.'
+      );
+    return [
+      {
+        id: posts[0].id,
+        postId: result.message.body.mid,
+        releaseURL: root.url || '',
+        status: 'completed',
+      },
+    ];
+  }
+
+  private snapshot(
+    label: string,
+    total: number,
+    description: string
+  ): AnalyticsData {
+    return {
+      label,
+      description,
+      type: 'snapshot',
+      percentageChange: 0,
+      data: [{ total: String(total), date: dayjs().format('YYYY-MM-DD') }],
+    };
+  }
+
+  private isCounter(value: unknown): value is number {
+    return (
+      typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+    );
+  }
+
+  async postAnalytics(
+    id: string,
+    accessToken: string,
+    postId: string,
+    _date: number
+  ): Promise<AnalyticsData[]> {
+    const message = await this.readPost(
+      this.credentials(id, accessToken),
+      postId
+    );
+    return this.isCounter(message.stat?.views)
+      ? [
+          this.snapshot(
+            'Просмотры',
+            message.stat.views,
+            'Всего с момента публикации. MAX не возвращает историю просмотров по дням.'
+          ),
+        ]
+      : [];
+  }
+
+  async analytics(
+    id: string,
+    accessToken: string,
+    date: number
+  ): Promise<AnalyticsData[]> {
+    const credentials = this.credentials(id, accessToken);
+    if (!Number.isInteger(date) || date < 1 || date > 90)
+      this.fail('Выберите период статистики MAX от 1 до 90 дней.');
+    const now = dayjs();
+    const since = now
+      .subtract(date - 1, 'day')
+      .startOf('day')
+      .valueOf();
+    const chat = await this.api<{
+      chat_id: number | string;
+      participants_count?: number;
+    }>(`/chats/${credentials.chatId}`, credentials.token);
+    if (String(chat.chat_id) !== credentials.chatId)
+      this.fail('Данные статистики MAX не соответствуют каналу.');
+    const messages = new Map<string, MaxMessage>();
+    let before = now.valueOf();
+    // MAX returns newest first. `from` is the upper bound, `to` the lower bound.
+    // Keep a timestamp overlap, so a page boundary never silently loses posts.
+    for (let page = 0; ; page++) {
+      if (page === 100)
+        this.fail(
+          'MAX: слишком много публикаций. Выберите более короткий период.'
+        );
+      const result = await this.api<{ messages: MaxMessage[] }>(
+        `/messages?chat_id=${credentials.chatId}&from=${before}&to=${since}&count=100`,
+        credentials.token
+      );
+      if (!Array.isArray(result.messages))
+        this.fail(
+          'MAX не вернул статистику публикаций. Повторите запрос позже.'
+        );
+      let oldest = before;
+      for (const message of result.messages) {
+        if (
+          String(message.recipient?.chat_id) !== credentials.chatId ||
+          message.recipient?.chat_type !== 'channel' ||
+          !message.body?.mid ||
+          !Number.isSafeInteger(message.timestamp) ||
+          message.timestamp < 0 ||
+          message.timestamp > before
+        )
+          this.fail(
+            'MAX вернул неполные данные статистики. Повторите запрос позже.'
+          );
+        oldest = Math.min(oldest, message.timestamp);
+        if (message.timestamp >= since) messages.set(message.body.mid, message);
+      }
+      if (result.messages.length < 100 || oldest < since) break;
+      if (oldest >= before)
+        this.fail(
+          'MAX не вернул все публикации за период. Выберите более короткий период.'
+        );
+      before = oldest;
+    }
+    const metrics: AnalyticsData[] = [];
+    if (this.isCounter(chat.participants_count))
+      metrics.push(
+        this.snapshot(
+          'Участники канала',
+          chat.participants_count,
+          'Текущее число участников канала. Не прирост за выбранный период.'
+        )
+      );
+    metrics.push(
+      this.snapshot(
+        'Публикации',
+        messages.size,
+        'Посты, опубликованные в канале за выбранный период, включая публикации вне Postiz.'
+      )
+    );
+    const posts = [...messages.values()];
+    // An omitted stat is unavailable, not zero; do not show a partial total.
+    if (posts.every((message) => this.isCounter(message.stat?.views)))
+      metrics.push(
+        this.snapshot(
+          'Просмотры публикаций',
+          posts.reduce((total, message) => total + message.stat!.views!, 0),
+          'Накопленные просмотры постов, опубликованных за выбранный период. Не прирост просмотров за период.'
+        )
+      );
+    return metrics;
   }
 }

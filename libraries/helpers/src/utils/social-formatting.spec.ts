@@ -1,5 +1,36 @@
 import { compileSocialContent } from './social-formatting';
 
+describe('MAX comment formatting', () => {
+  it('preserves formatting and exposes link destinations as text in payload, preview and length', () => {
+    const source =
+      '<p><b>Читать</b> <a href="https://example.org/?a=1&amp;b=2">статью</a></p>';
+    const result = compileSocialContent('max', source, undefined, {
+      comment: true,
+    });
+    expect(result.text).toBe('Читать статью (https://example.org/?a=1&b=2)');
+    expect(result.message).toBe(
+      '<b>Читать</b> статью (https://example.org/?a=1&amp;b=2)'
+    );
+    expect(result.previewHtml).toBe(result.message);
+    expect(result.length).toBe(Array.from(result.text).length);
+    expect(compileSocialContent('max', source).message).toContain('<a href=');
+    expect(
+      compileSocialContent('telegram', source, undefined, { comment: true })
+        .message
+    ).toContain('<a href=');
+  });
+
+  it('does not duplicate bare links or restore unsafe links and mentions', () => {
+    const result = compileSocialContent(
+      'max',
+      '<a href="https://example.org">https://example.org</a> <a href="javascript:alert(1)">unsafe</a> <a href="max://user/123">name</a>',
+      undefined,
+      { comment: true }
+    );
+    expect(result.message).toBe('https://example.org unsafe name');
+  });
+});
+
 describe('Social post formatting', () => {
   it('preserves Telegram formatting and safely escapes literal HTML characters', () => {
     const result = compileSocialContent(

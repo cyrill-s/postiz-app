@@ -261,7 +261,8 @@ export class PostActivity {
       ? compileSocialContent(
           integration.providerIdentifier,
           post.content,
-          provider.mentionFormat
+          provider.mentionFormat,
+          { comment }
         )
       : undefined;
     return {
