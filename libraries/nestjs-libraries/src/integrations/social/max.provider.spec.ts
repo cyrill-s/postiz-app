@@ -431,6 +431,15 @@ describe('MAX channels', () => {
     }
   );
 
+  it('explains disabled channel comments without retrying the rejected send', async () => {
+    reply({ messages: [published()] });
+    reply({ code: 'proto.payload', message: 'comments.comments_disabled' }, 400);
+    await expect(comment()).rejects.toThrow(
+      'MAX: комментарии в канале выключены. Включите их в настройках канала.'
+    );
+    expect(mock).toHaveBeenCalledTimes(2);
+  });
+
   it('rejects a missing comment ID without repeating the send', async () => {
     reply({ messages: [published()] });
     reply({});

@@ -307,6 +307,10 @@ export class MaxProvider extends SocialAbstract implements SocialProvider {
           '{}',
           'Токен бота MAX недействителен. Подключите канал заново.'
         );
+      if (data.message === 'comments.comments_disabled')
+        this.fail(
+          'MAX: комментарии в канале выключены. Включите их в настройках канала.'
+        );
       if (response.status === 403)
         this.fail(
           'Боту MAX не хватает прав. Разрешите чтение и публикацию в канале; для комментариев включите их в настройках канала.'
