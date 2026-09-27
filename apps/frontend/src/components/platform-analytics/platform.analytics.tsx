@@ -29,6 +29,7 @@ const allowedIntegrations = [
   'pinterest',
   'threads',
   'max',
+  'telegram',
   'x',
 ];
 export const PlatformAnalytics = () => {
@@ -87,6 +88,7 @@ export const PlatformAnalytics = () => {
         'youtube',
         'threads',
         'max',
+        'telegram',
         'gmb',
         'x',
         'tiktok',
@@ -108,6 +110,7 @@ export const PlatformAnalytics = () => {
         'youtube',
         'threads',
         'max',
+        'telegram',
         'gmb',
         'x',
         'tiktok',

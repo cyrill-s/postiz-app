@@ -847,6 +847,16 @@ export class PostsService {
             settings,
             additionalSettings
           );
+          if (
+            errors === true &&
+            media.length > 1 &&
+            provider.checkCommentSupport
+          ) {
+            errors = await provider.checkCommentSupport(
+              integration.internalId,
+              integration.token
+            );
+          }
         } catch (err: any) {
           errors = err?.message || 'Invalid media';
         }

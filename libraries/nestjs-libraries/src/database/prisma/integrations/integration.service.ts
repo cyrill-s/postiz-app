@@ -502,6 +502,23 @@ export class IntegrationService {
           getIntegration.token,
           +date
         );
+        if (integrationProvider.analyticsPublishedPosts) {
+          const days = [7, 30, 90].includes(+date) ? +date : 7;
+          const now = dayjs();
+          const count = await this._integrationRepository.countPublishedPosts(
+            org.id,
+            integration,
+            now.startOf('day').subtract(days - 1, 'day').toDate(),
+            now.toDate()
+          );
+          loadAnalytics.push({
+            label: 'Публикации через Postiz',
+            type: 'snapshot',
+            description: 'Успешно опубликованные через Postiz за выбранный период. Без комментариев и публикаций вне Postiz.',
+            percentageChange: 0,
+            data: [{ total: String(count), date: now.format('YYYY-MM-DD') }],
+          });
+        }
         await ioRedis.set(
           `integration:${org.id}:${integration}:${date}`,
           JSON.stringify(loadAnalytics),

@@ -1,0 +1,13 @@
+[Unit]
+Description=Route Telegram HTTPS webhook replies through the public interface
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/postiz-telegram-webhook-routing apply
+ExecStop=/usr/local/sbin/postiz-telegram-webhook-routing rollback
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

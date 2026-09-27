@@ -51,6 +51,20 @@ export class IntegrationRepository {
     });
   }
 
+  countPublishedPosts(orgId: string, integrationId: string, from: Date, to: Date) {
+    return this._posts.model.post.count({
+      where: {
+        organizationId: orgId,
+        integrationId,
+        parentPostId: null,
+        deletedAt: null,
+        state: 'PUBLISHED',
+        releaseId: { not: null, notIn: ['', 'missing'] },
+        publishDate: { gte: from, lte: to },
+      },
+    });
+  }
+
   insertMentions(
     platform: string,
     mentions: { name: string; username: string; image: string }[]

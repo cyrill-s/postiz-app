@@ -1,5 +1,6 @@
 import {
   AuthTokenDetails,
+  AnalyticsData,
   PostDetails,
   PostResponse,
   SocialProvider,
@@ -14,6 +15,8 @@ import { Integration } from '@prisma/client';
 import { compileSocialContent } from '@gitroom/helpers/utils/social-formatting';
 import { BadBody } from '../social.abstract';
 import { TelegramSettingsDto } from '../../dtos/posts/providers-settings/telegram.dto';
+import { TelegramUpdates } from './telegram.updates';
+import { timer } from '@gitroom/helpers/utils/timer';
 
 const telegramBot = new TelegramBot(process.env.TELEGRAM_TOKEN!);
 // Added to support local storage posting
@@ -29,8 +32,16 @@ export class TelegramProvider extends SocialAbstract implements SocialProvider {
   scopes = [] as string[];
   editor = 'html' as const;
   dto = TelegramSettingsDto;
+  analyticsPublishedPosts = true;
+  private updates = new TelegramUpdates();
   maxLength() {
     return 4096;
+  }
+
+  override async checkValidity(posts: Array<Array<{ path: string }>>) {
+    return posts.slice(1).some((media) => media.length > 10)
+      ? 'Telegram: не более 10 файлов в одном комментарии.'
+      : (true as const);
   }
 
   async refreshToken(refresh_token: string): Promise<AuthTokenDetails> {
@@ -61,7 +72,6 @@ export class TelegramProvider extends SocialAbstract implements SocialProvider {
   }) {
     const chat = await telegramBot.getChat(params.code);
 
-    console.log(JSON.stringify(chat));
     if (!chat?.id) {
       return 'No chat found';
     }
@@ -83,11 +93,17 @@ export class TelegramProvider extends SocialAbstract implements SocialProvider {
   }
 
   async getBotId(query: { id?: number; word: string }) {
-    // Added allowed_updates Ensure only necessary updates are fetched
-    const res = await telegramBot.getUpdates({
-      ...(query.id ? { offset: query.id } : {}),
-      allowed_updates: ['message', 'channel_post'],
-    });
+    // A webhook and getUpdates cannot run together. Keep the existing onboarding
+    // flow, reading its short-lived command receipt when webhook mode is enabled.
+    const connected = this.updates.enabled()
+      ? await this.updates.connection(query.word)
+      : null;
+    const res = this.updates.enabled()
+      ? []
+      : await telegramBot.getUpdates({
+          ...(query.id ? { offset: query.id } : {}),
+          allowed_updates: ['message', 'channel_post'],
+        });
     //message.text is for groups, channel_post.text is for channels
     const match = res.find(
       (p) =>
@@ -97,7 +113,10 @@ export class TelegramProvider extends SocialAbstract implements SocialProvider {
           p?.channel_post?.chat?.id)
     );
     // get correct chatId based on the channel type
-    const chatId = match?.message?.chat?.id || match?.channel_post?.chat?.id;
+    const chatId =
+      connected?.chatId ||
+      match?.message?.chat?.id ||
+      match?.channel_post?.chat?.id;
 
     // prevents the code from running while chatId is still undefined to avoid the error 'ETELEGRAM: 400 Bad Request: chat_id is empty'. the code would still work eventually but console spam is not pretty
     if (chatId) {
@@ -107,7 +126,9 @@ export class TelegramProvider extends SocialAbstract implements SocialProvider {
       const isAdmin = await this.botIsAdmin(chatId, botId);
       // get the messageId of the message that triggered the connection
       const connectMessageId =
-        match?.message?.message_id || match?.channel_post?.message_id;
+        connected?.messageId ||
+        match?.message?.message_id ||
+        match?.channel_post?.message_id;
 
       if (!isAdmin) {
         // alternatively you can replace this with a console.log if you do not want to inform the user of the bot's admin status
@@ -393,9 +414,7 @@ export class TelegramProvider extends SocialAbstract implements SocialProvider {
         {
           id: firstPost.id,
           postId: String(messageId),
-          releaseURL: `https://t.me/${
-            id !== 'undefined' ? id : `c/${accessToken.replace('-100', '')}`
-          }/${messageId}`,
+          releaseURL: this.messageUrl(id, accessToken, messageId),
           status: 'completed',
         },
       ];
@@ -407,30 +426,168 @@ export class TelegramProvider extends SocialAbstract implements SocialProvider {
   async comment(
     id: string,
     postId: string,
-    lastCommentId: string | undefined,
+    _lastCommentId: string | undefined,
     accessToken: string,
     postDetails: PostDetails[],
     integration: Integration
   ): Promise<PostResponse[]> {
     const [commentPost] = postDetails;
-    const replyToId = Number(lastCommentId || postId);
-
-    const messageId = await this.deliver(accessToken, commentPost, replyToId);
+    if (
+      postDetails.length !== 1 ||
+      !/^[1-9][0-9]*$/.test(postId) ||
+      !Number.isSafeInteger(Number(postId))
+    )
+      this.fail('Некорректная публикация Telegram для комментария.');
+    const destination = await this.commentDestination(accessToken);
+    let replyToId = Number(postId);
+    let targetChat = accessToken;
+    if (destination.type === 'channel') {
+      let discussion = await this.updates.discussion(accessToken, postId);
+      // The automatic forward may reach the webhook just after sendMessage returns.
+      for (let attempt = 0; !discussion && attempt < 15; attempt++) {
+        await timer(1000);
+        discussion = await this.updates.discussion(accessToken, postId);
+      }
+      if (!discussion || discussion.chatId !== destination.linked_chat_id) {
+        this.fail(
+          'Не найдена ветка обсуждения поста Telegram. Проверьте группу обсуждений и доступ бота; пост уже опубликован.'
+        );
+      }
+      targetChat = String(discussion.chatId);
+      replyToId = discussion.messageId;
+    }
+    // Comments always reply to the original discussion root. A missing root must
+    // fail instead of becoming an unrelated message in the group or channel.
+    let messageId: number | null;
+    try {
+      messageId = await this.deliver(
+        targetChat,
+        {
+          ...commentPost,
+          settings: { ...commentPost.settings, separateText: false },
+        },
+        replyToId
+      );
+    } catch (error) {
+      if (error instanceof BadBody) throw error;
+      this.fail(
+        'Telegram не подтвердил комментарий. Проверьте ветку обсуждения перед повторной отправкой.'
+      );
+    }
 
     if (messageId) {
       return [
         {
           id: commentPost.id,
           postId: String(messageId),
-          releaseURL: `https://t.me/${
-            id !== 'undefined' ? id : `c/${accessToken.replace('-100', '')}`
-          }/${messageId}`,
+          releaseURL:
+            destination.type === 'channel'
+              ? `${this.messageUrl(
+                  destination.username || id,
+                  accessToken,
+                  Number(postId)
+                )}?comment=${messageId}`
+              : this.messageUrl(
+                  destination.username || id,
+                  accessToken,
+                  messageId
+                ),
           status: 'completed',
         },
       ];
     }
 
     return [];
+  }
+
+  private fail(message: string): never {
+    throw new BadBody(this.identifier, '{}', '{}', message);
+  }
+
+  private messageUrl(id: string, chatId: string, messageId: number) {
+    if (/^[a-zA-Z][a-zA-Z0-9_]{3,31}$/.test(id) && id !== 'undefined')
+      return `https://t.me/${id}/${messageId}`;
+    return /^-100[0-9]+$/.test(chatId)
+      ? `https://t.me/c/${chatId.slice(4)}/${messageId}`
+      : '';
+  }
+
+  private async commentDestination(accessToken: string) {
+    if (
+      !/^-?[1-9][0-9]*$/.test(accessToken) ||
+      !Number.isSafeInteger(Number(accessToken))
+    )
+      this.fail('Переподключите канал Telegram.');
+    try {
+      const chat = await telegramBot.getChat(accessToken);
+      if (String(chat.id) !== accessToken)
+        this.fail('Канал Telegram не соответствует подключению.');
+      if (chat.type !== 'channel') return chat;
+      if (!chat.linked_chat_id)
+        this.fail(
+          'Привяжите группу обсуждений к каналу Telegram и добавьте в неё бота администратором.'
+        );
+      if (!this.updates.enabled())
+        this.fail(
+          'Приём комментариев Telegram не настроен. Обратитесь к администратору Postiz.'
+        );
+      const [group, me] = await Promise.all([
+        telegramBot.getChat(chat.linked_chat_id),
+        telegramBot.getMe(),
+      ]);
+      if (group.type !== 'supergroup' || group.linked_chat_id !== chat.id)
+        this.fail('Группа обсуждений Telegram не связана с этим каналом.');
+      const member = await telegramBot.getChatMember(group.id, me.id);
+      if (!['administrator', 'creator'].includes(member.status))
+        this.fail(
+          'Добавьте бота администратором в группу обсуждений Telegram.'
+        );
+      return chat;
+    } catch (error) {
+      if (error instanceof BadBody) throw error;
+      this.fail(
+        'Не удалось проверить обсуждения Telegram. Проверьте доступ бота к каналу и группе обсуждений.'
+      );
+    }
+  }
+
+  async checkCommentSupport(
+    _id: string,
+    accessToken: string
+  ): Promise<true | string> {
+    try {
+      await this.commentDestination(accessToken);
+      return true;
+    } catch (error) {
+      return error instanceof BadBody
+        ? error.message
+        : 'Не удалось проверить комментарии Telegram.';
+    }
+  }
+
+  async analytics(
+    _id: string,
+    accessToken: string,
+    _date: number
+  ): Promise<AnalyticsData[]> {
+    try {
+      const total = await telegramBot.getChatMemberCount(accessToken);
+      if (!Number.isSafeInteger(total) || total < 0) return [];
+      return [
+        {
+          label: 'Подписчики',
+          type: 'snapshot',
+          percentageChange: 0,
+          description:
+            'Текущее число участников. Telegram Bot API не предоставляет просмотры и историю охвата.',
+          data: [{ total: String(total), date: dayjs().format('YYYY-MM-DD') }],
+        },
+      ];
+    } catch {
+      this.fail(
+        'Не удалось получить статистику Telegram. Проверьте доступ бота к каналу.'
+      );
+    }
   }
   // chunkMedia is used to split media into groups of "size". 10 is used here because telegram api allows a maximum of 10 media per group
   private chunkMedia(media: { type: string; media: string }[], size: number) {

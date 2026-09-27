@@ -212,6 +212,9 @@ export interface SocialProvider
   >;
   name: string;
   toolTip?: string;
+  /** Add the organization's locally recorded publication count to analytics. */
+  analyticsPublishedPosts?: boolean;
+  checkCommentSupport?(id: string, accessToken: string): Promise<true | string>;
   oneTimeToken?: boolean;
   isBetweenSteps: boolean;
   scopes: string[];

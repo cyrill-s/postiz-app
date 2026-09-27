@@ -1,0 +1,6 @@
+ARG POSTIZ_BASE_IMAGE=local/postiz:max-native-ac9bd184
+FROM ${POSTIZ_BASE_IMAGE}
+RUN rm -rf /app/apps/frontend/.next
+COPY frontend-next/ /app/apps/frontend/.next/
+COPY overlay/ /app/
+COPY public/ /app/apps/frontend/public/

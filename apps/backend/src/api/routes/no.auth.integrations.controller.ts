@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Get,
+  Headers,
   HttpException,
   Param,
   Post,
@@ -24,6 +25,7 @@ import {
 import { RefreshIntegrationService } from '@gitroom/nestjs-libraries/integrations/refresh.integration.service';
 import { OrganizationService } from '@gitroom/nestjs-libraries/database/prisma/organizations/organization.service';
 import { getSsrfSafeDispatcher } from '@gitroom/nestjs-libraries/dtos/webhooks/ssrf.safe.dispatcher';
+import { TelegramUpdates } from '@gitroom/nestjs-libraries/integrations/social/telegram.updates';
 
 @ApiTags('Integrations')
 @Controller('/integrations')
@@ -38,6 +40,14 @@ export class NoAuthIntegrationsController {
   @Get('/')
   getIntegrations() {
     return this._integrationManager.getAllIntegrations();
+  }
+
+  @Post('/telegram/webhook')
+  telegramWebhook(
+    @Headers('x-telegram-bot-api-secret-token') secret: string | undefined,
+    @Body() update: unknown
+  ) {
+    return new TelegramUpdates().webhook(secret, update);
   }
 
   @Post('/social-connect/:integration')
