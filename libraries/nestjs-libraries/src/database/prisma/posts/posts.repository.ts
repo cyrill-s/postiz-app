@@ -2,7 +2,12 @@ import {
   PrismaRepository,
   PrismaTransaction,
 } from '@gitroom/nestjs-libraries/database/prisma/prisma.service';
-import { BadRequestException, ConflictException, Injectable } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { Post as PostBody } from '@gitroom/nestjs-libraries/dtos/posts/create.post.dto';
 import {
   APPROVED_SUBMIT_FOR_ORDER,
@@ -360,6 +365,77 @@ export class PostsRepository {
         },
       },
     });
+  }
+
+  async cancelPostGroup(orgId: string, group: string) {
+    try {
+      return await this._transaction.model.$transaction(async (tx) => {
+        const roots = await tx.post.findMany({
+          where: {
+            organizationId: orgId,
+            group,
+            parentPostId: null,
+            deletedAt: null,
+          },
+          orderBy: { id: 'asc' },
+          select: {
+            id: true,
+            state: true,
+            publishDate: true,
+            integration: { select: { providerIdentifier: true } },
+          },
+        });
+        if (!roots.length) {
+          throw new NotFoundException('Post group not found');
+        }
+
+        const now = new Date();
+        const earliestPublishDate = new Date(now.getTime() + 5 * 60 * 1000);
+        if (
+          roots.some(
+            (post) =>
+              (post.state !== 'QUEUE' && post.state !== 'DRAFT') ||
+              post.publishDate.getTime() <= earliestPublishDate.getTime()
+          )
+        ) {
+          throw new ConflictException({ error: 'publishing' });
+        }
+        // Recheck eligibility in the write itself. A partial match must roll
+        // back all root deletes before any children or workflows are touched.
+        const cancelled = await tx.post.updateMany({
+          where: {
+            organizationId: orgId,
+            group,
+            id: { in: roots.map((post) => post.id) },
+            parentPostId: null,
+            deletedAt: null,
+            state: { in: ['QUEUE', 'DRAFT'] },
+            publishDate: { gt: earliestPublishDate },
+          },
+          data: { deletedAt: now },
+        });
+        if (cancelled.count !== roots.length) {
+          throw new ConflictException({ error: 'publishing' });
+        }
+        await tx.post.updateMany({
+          where: {
+            organizationId: orgId,
+            group,
+            parentPostId: { not: null },
+            deletedAt: null,
+          },
+          data: { deletedAt: now },
+        });
+        return roots;
+      }, { isolationLevel: 'Serializable' });
+    } catch (err) {
+      // A publish/edit racing a serializable transaction can abort it instead
+      // of returning a short update count. That is the same guarded conflict.
+      if ((err as { code?: string })?.code === 'P2034') {
+        throw new ConflictException({ error: 'publishing' });
+      }
+      throw err;
+    }
   }
 
   updatePostGroup(

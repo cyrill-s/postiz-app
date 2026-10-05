@@ -24,11 +24,15 @@ describe('public post group HTTP routes', () => {
   let base: string;
   const response = {
     group: 'group', publishDate: '2026-10-06T12:00:00.000Z', state: 'QUEUE',
-    posts: [{ id: 'root', integrationId: 'channel', content: 'Text', imageCount: 2 }],
+    posts: [{ id: 'root', integrationId: 'channel', content: 'Text', imageCount: 2, state: 'QUEUE', publishDate: '2026-10-06T12:00:00.000Z' }],
   };
-  const posts = { getPublicPostGroup: jest.fn(), updatePublicPostGroup: jest.fn() };
+  const cancelled = { group: 'group', cancelled: ['root', 'other-root'] };
+  const posts = {
+    getPublicPostGroup: jest.fn(), updatePublicPostGroup: jest.fn(),
+    cancelPublicPostGroup: jest.fn(), deletePost: jest.fn(),
+  };
   const request = (method: string, body?: unknown, org = 'org-a', group = 'group') =>
-    fetch(`${base}/public/v1/posts/group/${group}`, {
+    fetch(`${base}/public/v1/posts/group/${group}${method === 'POST' ? '/cancel' : ''}`, {
       method,
       headers: { 'content-type': 'application/json', authorization: org },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
@@ -56,6 +60,8 @@ describe('public post group HTTP routes', () => {
     jest.clearAllMocks();
     posts.getPublicPostGroup.mockResolvedValue(response);
     posts.updatePublicPostGroup.mockResolvedValue(response);
+    posts.cancelPublicPostGroup.mockResolvedValue(cancelled);
+    posts.deletePost.mockResolvedValue({ error: true });
   });
   afterAll(async () => { await app?.close(); });
 
@@ -76,13 +82,32 @@ describe('public post group HTTP routes', () => {
     expect(await result.json()).toEqual(response);
     expect(posts.updatePublicPostGroup).toHaveBeenCalledWith('org-a', 'group', patch);
   });
+  it('POST cancel returns 200 with root ids using the authenticated org', async () => {
+    const result = await request('POST');
+    expect(result.status).toBe(200);
+    expect(await result.json()).toEqual(cancelled);
+    expect(posts.cancelPublicPostGroup).toHaveBeenCalledWith('org-a', 'group');
+    await request('POST', undefined, 'org-b');
+    expect(posts.cancelPublicPostGroup).toHaveBeenLastCalledWith('org-b', 'group');
+    expect(posts.deletePost).not.toHaveBeenCalled();
+  });
+  it('DELETE group retains the existing delete service and response', async () => {
+    const result = await request('DELETE');
+    expect(result.status).toBe(200);
+    expect(await result.json()).toEqual({ error: true });
+    expect(posts.deletePost).toHaveBeenCalledWith('org-a', 'group');
+    expect(posts.cancelPublicPostGroup).not.toHaveBeenCalled();
+  });
   it.each([
     ['GET', 404, { statusCode: 404, message: 'Post group not found' }],
     ['PUT', 404, { statusCode: 404, message: 'Post group not found' }],
     ['PUT', 400, { msg: 'Unknown post id for this group: other-root' }],
     ['PUT', 409, { error: 'publishing' }],
+    ['POST', 404, { statusCode: 404, message: 'Post group not found' }],
+    ['POST', 409, { error: 'publishing' }],
   ])('preserves the %s %i error body', async (method, status, error) => {
-    (method === 'GET' ? posts.getPublicPostGroup : posts.updatePublicPostGroup)
+    (method === 'GET' ? posts.getPublicPostGroup
+      : method === 'POST' ? posts.cancelPublicPostGroup : posts.updatePublicPostGroup)
       .mockRejectedValueOnce(new HttpException(error, status));
     const result = await request(method, method === 'PUT' ? { date: response.publishDate } : undefined);
     expect(result.status).toBe(status);

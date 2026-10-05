@@ -4,6 +4,7 @@ import {
   Controller,
   Delete,
   Get,
+  HttpCode,
   HttpException,
   Param,
   Post,
@@ -221,6 +222,16 @@ export class PublicIntegrationsController {
   ) {
     Sentry.metrics.count('public_api-request', 1);
     return this._postsService.deletePost(org.id, group);
+  }
+
+  @Post('/posts/group/:group/cancel')
+  @HttpCode(200)
+  cancelPostGroup(
+    @GetOrgFromRequest() org: Organization,
+    @Param('group') group: string
+  ) {
+    Sentry.metrics.count('public_api-request', 1);
+    return this._postsService.cancelPublicPostGroup(org.id, group);
   }
 
   @Get('/posts/group/:group')

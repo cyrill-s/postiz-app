@@ -25,7 +25,7 @@ class ProviderSettings {
   mode: string;
 }
 
-describe('public post group edit (service and scoped repository writes)', () => {
+describe('public post group edit/cancel (service and scoped repository writes)', () => {
   const now = new Date('2026-10-05T12:00:00.000Z');
   const date = '2026-10-06T12:00:00.000Z';
   const newDate = '2026-10-07T18:30:00.000Z';
@@ -64,6 +64,8 @@ describe('public post group edit (service and scoped repository writes)', () => 
       if (expected && typeof expected === 'object') {
         if (expected.in) return expected.in.includes(actual);
         if (expected.gte) return actual.getTime() >= expected.gte.getTime();
+        if (expected.gt) return actual.getTime() > expected.gt.getTime();
+        if ('not' in expected) return actual !== expected.not;
       }
       return actual === expected;
     });
@@ -85,6 +87,23 @@ describe('public post group edit (service and scoped repository writes)', () => 
     expect(list).not.toHaveBeenCalled();
     expect(start).not.toHaveBeenCalled();
   };
+  const expectCancelError = async (status: number, group = 'group', org = 'org-a') => {
+    const before = snapshot();
+    try {
+      await service.cancelPublicPostGroup(org, group);
+      throw new Error('Expected the cancel to fail');
+    } catch (err) {
+      expect(err).toBeInstanceOf(HttpException);
+      expect((err as HttpException).getStatus()).toBe(status);
+      expect((err as HttpException).getResponse()).toEqual(status === 409
+        ? { error: 'publishing' } : expect.objectContaining({ statusCode: 404 }));
+    }
+    expect(rows).toEqual(before);
+    expect(updateMany).not.toHaveBeenCalled();
+    expect(list).not.toHaveBeenCalled();
+    expect(terminate).not.toHaveBeenCalled();
+    expect(start).not.toHaveBeenCalled();
+  };
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -98,7 +117,10 @@ describe('public post group edit (service and scoped repository writes)', () => 
       makePost('other-group', { group: 'other' }),
       makePost('deleted', { deletedAt: now }),
     ];
-    findMany = jest.fn(async ({ where }) => rows.filter((post) => matches(post, where)).map((post) => ({ ...post })));
+    findMany = jest.fn(async ({ where, orderBy }) => {
+      const selected = rows.filter((post) => matches(post, where)).map((post) => ({ ...post }));
+      return orderBy?.id === 'asc' ? selected.sort((a, b) => a.id.localeCompare(b.id)) : selected;
+    });
     updateMany = jest.fn(async ({ where, data }) => {
       const selected = rows.filter((post) => matches(post, where));
       selected.forEach((post) => Object.assign(post, data, { updatedAt: new Date() }));
@@ -106,7 +128,7 @@ describe('public post group edit (service and scoped repository writes)', () => 
     });
     transaction = jest.fn(async (callback) => {
       const before = snapshot();
-      try { return await callback({ post: { updateMany } }); }
+      try { return await callback({ post: { findMany, updateMany } }); }
       catch (err) { rows = before; throw err; }
     });
     repository = new PostsRepository(
@@ -147,8 +169,8 @@ describe('public post group edit (service and scoped repository writes)', () => 
     expect(await service.getPublicPostGroup('org-a', 'group')).toEqual({
       group: 'group', publishDate: date, state: 'QUEUE',
       posts: [
-        { id: 'root-a', integrationId: 'channel-root-a', content: 'Text root-a', imageCount: 1 },
-        { id: 'root-b', integrationId: 'channel-root-b', content: 'Text root-b', imageCount: 1 },
+        { id: 'root-a', integrationId: 'channel-root-a', content: 'Text root-a', imageCount: 1, state: 'QUEUE', publishDate: date },
+        { id: 'root-b', integrationId: 'channel-root-b', content: 'Text root-b', imageCount: 1, state: 'QUEUE', publishDate: date },
       ],
     });
     expect(findMany).toHaveBeenCalledWith(expect.objectContaining({
@@ -170,6 +192,154 @@ describe('public post group edit (service and scoped repository writes)', () => 
     rows = [makePost('comment', { parentPostId: 'absent' })];
     await expect(service.getPublicPostGroup('org-a', 'group')).rejects.toMatchObject({ status: 404 });
     await expect(service.getPublicPostGroup('org-a', 'missing')).rejects.toMatchObject({ status: 404 });
+  });
+
+  it('GET exposes each root state/date when the group is mixed, preserving top-level fields', async () => {
+    saved('root-b').state = 'PUBLISHED';
+    saved('root-b').publishDate = new Date(newDate);
+    const result = await service.getPublicPostGroup('org-a', 'group');
+    expect(result).toMatchObject({ group: 'group', state: 'QUEUE', publishDate: date });
+    expect(result.posts).toEqual([
+      { id: 'root-a', integrationId: 'channel-root-a', content: 'Text root-a', imageCount: 1, state: 'QUEUE', publishDate: date },
+      { id: 'root-b', integrationId: 'channel-root-b', content: 'Text root-b', imageCount: 1, state: 'PUBLISHED', publishDate: newDate },
+    ]);
+  });
+
+  it('cancel soft-deletes every eligible root and thread in the org, then terminates every root workflow', async () => {
+    saved('root-b').state = 'DRAFT';
+    // The guard applies to roots; comment dates/states do not block the group.
+    saved('comment').state = 'PUBLISHED';
+    saved('comment').publishDate = now;
+    saved('foreign').state = 'PUBLISHED';
+    const before = snapshot();
+    terminate.mockImplementation(async () => {
+      for (const id of ['root-a', 'root-b', 'comment', 'reply']) expect(saved(id).deletedAt).toEqual(now);
+    });
+    expect(await service.cancelPublicPostGroup('org-a', 'group')).toEqual({
+      group: 'group', cancelled: ['root-a', 'root-b'],
+    });
+    expect(transaction).toHaveBeenCalledTimes(1);
+    expect(transaction).toHaveBeenCalledWith(expect.any(Function), { isolationLevel: 'Serializable' });
+    expect(findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { organizationId: 'org-a', group: 'group', parentPostId: null, deletedAt: null },
+    }));
+    expect(updateMany).toHaveBeenNthCalledWith(1, {
+      where: {
+        organizationId: 'org-a', group: 'group', id: { in: ['root-a', 'root-b'] },
+        parentPostId: null, deletedAt: null, state: { in: ['QUEUE', 'DRAFT'] },
+        publishDate: { gt: new Date(now.getTime() + 300000) },
+      },
+      data: { deletedAt: now },
+    });
+    for (const post of before) {
+      expect(saved(post.id)).toEqual(['root-a', 'root-b', 'comment', 'reply'].includes(post.id)
+        ? { ...post, deletedAt: now, updatedAt: now } : post);
+    }
+    expect(list).toHaveBeenCalledTimes(2);
+    expect(list).toHaveBeenCalledWith({ query: 'postId="root-a" AND ExecutionStatus="Running"' });
+    expect(list).toHaveBeenCalledWith({ query: 'postId="root-b" AND ExecutionStatus="Running"' });
+    expect(terminate).toHaveBeenCalledTimes(2);
+    expect(start).not.toHaveBeenCalled();
+  });
+
+  it.each(['PUBLISHED', 'ERROR'])('cancel rejects a mixed QUEUE/%s group without deleting or terminating anything', async (state) => {
+    saved('root-b').state = state;
+    await expectCancelError(409);
+  });
+
+  it.each(['QUEUE', 'DRAFT'])('cancel strictly enforces more than five minutes for %s roots', async (state) => {
+    saved('root-b').state = state;
+    for (const milliseconds of [-1, 0, 299999, 300000]) {
+      saved('root-b').publishDate = new Date(now.getTime() + milliseconds);
+      await expectCancelError(409);
+    }
+    saved('root-b').publishDate = new Date(now.getTime() + 300001);
+    await expect(service.cancelPublicPostGroup('org-a', 'group')).resolves.toEqual({
+      group: 'group', cancelled: ['root-a', 'root-b'],
+    });
+  });
+
+  it('cancel returns 404 for missing, foreign-only, deleted and child-only groups', async () => {
+    await expectCancelError(404, 'missing');
+    await expectCancelError(404, 'group', 'org-c');
+    rows = [makePost('deleted', { deletedAt: now }), makePost('comment', { parentPostId: 'absent' })];
+    await expectCancelError(404);
+  });
+
+  it('cancel is scoped to the authenticated org even when another org has a publishing root with the same group', async () => {
+    saved('root-a').state = 'PUBLISHED';
+    const before = snapshot();
+    expect(await service.cancelPublicPostGroup('org-b', 'group')).toEqual({
+      group: 'group', cancelled: ['foreign'],
+    });
+    expect(rows.filter((post) => post.organizationId === 'org-a')).toEqual(
+      before.filter((post) => post.organizationId === 'org-a')
+    );
+    expect(saved('foreign').deletedAt).toEqual(now);
+    expect(list).toHaveBeenCalledTimes(1);
+    expect(list).toHaveBeenCalledWith({ query: 'postId="foreign" AND ExecutionStatus="Running"' });
+    expect(terminate).toHaveBeenCalledTimes(1);
+    expect(start).not.toHaveBeenCalled();
+  });
+
+  it('cancel rolls back a partial root match when the worker moves a root out of QUEUE before the update', async () => {
+    const before = snapshot();
+    const workerChange = { state: 'PUBLISHED', updatedAt: now };
+    const implementation = updateMany.getMockImplementation();
+    // Preserve the independently committed worker change when rolling back
+    // this transaction's writes, as the database would.
+    transaction.mockImplementationOnce(async (callback) => {
+      try { return await callback({ post: { findMany, updateMany } }); }
+      catch (err) {
+        rows = before.map((post) => post.id === 'root-b' ? { ...post, ...workerChange } : post);
+        throw err;
+      }
+    });
+    updateMany.mockImplementationOnce(async (args) => {
+      Object.assign(saved('root-b'), workerChange);
+      const result = await implementation(args);
+      expect(result.count).toBe(1);
+      expect(saved('root-a').deletedAt).toEqual(now);
+      expect(saved('root-b').deletedAt).toBeNull();
+      return result;
+    });
+    try {
+      await service.cancelPublicPostGroup('org-a', 'group');
+      throw new Error('Expected concurrent publishing rejection');
+    } catch (err) {
+      expect((err as HttpException).getStatus()).toBe(409);
+      expect((err as HttpException).getResponse()).toEqual({ error: 'publishing' });
+    }
+    expect(rows).toEqual(before.map((post) => post.id === 'root-b' ? { ...post, ...workerChange } : post));
+    expect(updateMany).toHaveBeenCalledTimes(1);
+    expect(list).not.toHaveBeenCalled();
+    expect(terminate).not.toHaveBeenCalled();
+    expect(start).not.toHaveBeenCalled();
+  });
+
+  it('cancel rolls back all roots if deleting their children fails', async () => {
+    const before = snapshot();
+    updateMany.mockImplementationOnce(updateMany.getMockImplementation())
+      .mockRejectedValueOnce(new Error('Database failure'));
+    await expect(service.cancelPublicPostGroup('org-a', 'group')).rejects.toThrow('Database failure');
+    expect(rows).toEqual(before);
+    expect(list).not.toHaveBeenCalled();
+    expect(start).not.toHaveBeenCalled();
+  });
+
+  it('cancel reports an aborted serializable transaction as a publishing conflict', async () => {
+    const before = snapshot();
+    transaction.mockRejectedValueOnce({ code: 'P2034' });
+    try {
+      await service.cancelPublicPostGroup('org-a', 'group');
+      throw new Error('Expected transaction conflict');
+    } catch (err) {
+      expect((err as HttpException).getStatus()).toBe(409);
+      expect((err as HttpException).getResponse()).toEqual({ error: 'publishing' });
+    }
+    expect(rows).toEqual(before);
+    expect(list).not.toHaveBeenCalled();
+    expect(start).not.toHaveBeenCalled();
   });
 
   it('PUT changes only root content, preserving the group, raw images/settings, tags, delays and children', async () => {

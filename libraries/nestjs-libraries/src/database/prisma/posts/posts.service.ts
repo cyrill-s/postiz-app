@@ -557,6 +557,8 @@ export class PostsService {
           integrationId: post.integrationId,
           content: post.content,
           imageCount: Array.isArray(images) ? images.length : 0,
+          state: post.state,
+          publishDate: dayjs.utc(post.publishDate).toISOString(),
         };
       }),
     };
@@ -567,6 +569,21 @@ export class PostsService {
       group,
       await this._postRepository.getPostsByGroup(orgId, group)
     );
+  }
+
+  async cancelPublicPostGroup(orgId: string, group: string) {
+    const roots = await this._postRepository.cancelPostGroup(orgId, group);
+    // Like PUT removal, terminate every root's workflows after committing,
+    // using DRAFT to prevent startWorkflow from scheduling a replacement.
+    for (const root of roots) {
+      await this.startWorkflow(
+        root.integration.providerIdentifier.split('-')[0].toLowerCase(),
+        root.id,
+        orgId,
+        'DRAFT'
+      );
+    }
+    return { group, cancelled: roots.map((post) => post.id) };
   }
 
   async updatePublicPostGroup(orgId: string, group: string, rawBody: any) {
