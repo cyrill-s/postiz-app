@@ -6,12 +6,15 @@ import {
 } from '@gitroom/helpers/utils/social-formatting';
 import {
   BadRequestException,
+  ConflictException,
+  HttpException,
   Injectable,
   NotFoundException,
   ValidationPipe,
 } from '@nestjs/common';
 import { PostsRepository } from '@gitroom/nestjs-libraries/database/prisma/posts/posts.repository';
 import { CreatePostDto } from '@gitroom/nestjs-libraries/dtos/posts/create.post.dto';
+import { UpdatePostGroupDto } from '@gitroom/nestjs-libraries/dtos/posts/update.post.group.dto';
 import dayjs from 'dayjs';
 import { IntegrationManager } from '@gitroom/nestjs-libraries/integrations/integration.manager';
 import {
@@ -531,6 +534,182 @@ export class PostsService {
       integration: posts[0].integrationId,
       settings: JSON.parse(posts[0].settings || '{}'),
     };
+  }
+
+  private publicPostGroupResponse(group: string, all: Post[]) {
+    const roots = all
+      .filter((post) => !post.parentPostId && !post.deletedAt)
+      .sort((a, b) => a.id.localeCompare(b.id));
+    if (!roots.length) {
+      throw new NotFoundException('Post group not found');
+    }
+    return {
+      group,
+      publishDate: dayjs.utc(roots[0].publishDate).toISOString(),
+      state: roots[0].state,
+      posts: roots.map((post) => {
+        let images = [];
+        try {
+          images = JSON.parse(post.image || '[]');
+        } catch (err) {}
+        return {
+          id: post.id,
+          integrationId: post.integrationId,
+          content: post.content,
+          imageCount: Array.isArray(images) ? images.length : 0,
+        };
+      }),
+    };
+  }
+
+  async getPublicPostGroup(orgId: string, group: string) {
+    return this.publicPostGroupResponse(
+      group,
+      await this._postRepository.getPostsByGroup(orgId, group)
+    );
+  }
+
+  async updatePublicPostGroup(orgId: string, group: string, rawBody: any) {
+    const all = await this._postRepository.getPostsByGroup(orgId, group);
+    // Check org ownership before accepting any supplied post ids.
+    this.publicPostGroupResponse(group, all);
+    const roots = all.filter((post) => !post.parentPostId);
+    const fail = (msg: string): never => {
+      throw new HttpException({ msg }, 400);
+    };
+    const body: UpdatePostGroupDto = await new ValidationPipe({
+      transform: true,
+      whitelist: true,
+      forbidNonWhitelisted: true,
+      exceptionFactory: (errors) =>
+        new HttpException({ msg: this.firstValidationError(errors) }, 400),
+    }).transform(rawBody, { type: 'body', metatype: UpdatePostGroupDto });
+
+    const edits = body.posts || [];
+    const removed = body.removePostIds || [];
+    if (!body.date && !edits.length && !removed.length) {
+      fail('Provide date, posts or removePostIds');
+    }
+    if (body.date && new Date(body.date).getTime() <= Date.now()) {
+      fail('date must be in the future');
+    }
+    for (const id of [...edits.map((post) => post.id), ...removed]) {
+      if (!roots.some((post) => post.id === id)) {
+        fail(`Unknown post id for this group: ${id}`);
+      }
+    }
+    if (edits.some((post) => removed.includes(post.id))) {
+      fail('A post cannot be edited and removed in the same request');
+    }
+    if (removed.length === roots.length) {
+      fail('Cannot remove all posts; use DELETE for this group');
+    }
+
+    const affected = roots.filter(
+      (post) =>
+        body.date ||
+        removed.includes(post.id) ||
+        edits.some((edit) => edit.id === post.id)
+    );
+    if (
+      affected.some(
+        (post) =>
+          (post.state !== 'QUEUE' && post.state !== 'DRAFT') ||
+          post.publishDate.getTime() < Date.now() + 5 * 60 * 1000
+      )
+    ) {
+      throw new ConflictException({ error: 'publishing' });
+    }
+
+    // Rebuild the complete validation value just like updatePostSettings:
+    // existing media/settings and ordered comments, changing only root content.
+    // Validate every surviving affected root before the transaction starts.
+    for (const root of affected.filter((post) => !removed.includes(post.id))) {
+      const ordered = [root, ...this.arrangePostsByGroup(all, root.id)];
+      const edit = edits.find((post) => post.id === root.id);
+      const value = ordered.map((post) => {
+        let image = [];
+        try {
+          image = JSON.parse(post.image || '[]');
+        } catch (err) {}
+        return {
+          id: post.id,
+          content: post.id === root.id && edit ? edit.content : post.content,
+          delay: post.delay || 0,
+          image,
+        };
+      });
+      let settings = {};
+      try {
+        settings = JSON.parse(root.settings || '{}');
+      } catch (err) {}
+      let validation: Awaited<ReturnType<PostsService['validatePosts']>>[number];
+      try {
+        [validation] = await this.validatePosts(orgId, [
+          {
+            integration: { id: root.integrationId },
+            settings: {
+              ...settings,
+              __type: root.integration.providerIdentifier,
+            },
+            value,
+          },
+        ]);
+      } catch (err) {
+        if (err instanceof BadRequestException) {
+          fail(err.message);
+        }
+        throw err;
+      }
+      if (validation.emptyContent) {
+        fail(
+          `${validation.name}: Your post should have at least one character or one image.`
+        );
+      }
+      if (root.state !== 'DRAFT') {
+        if (!validation.valid) {
+          fail(
+            `${validation.name}: ${validation.settingsError || 'Please fix your settings'}`
+          );
+        }
+        if (validation.errors !== true) {
+          fail(`${validation.name}: ${validation.errors}`);
+        }
+        if (validation.tooLong) {
+          fail(
+            `${validation.name}: The maximum characters is ${validation.maximumCharacters}`
+          );
+        }
+      }
+    }
+
+    const idsWithChildren = (posts: typeof roots) =>
+      posts.flatMap((post) =>
+        [post, ...this.arrangePostsByGroup(all, post.id)].map((item) => item.id)
+      );
+    await this._postRepository.updatePostGroup(orgId, group, {
+      roots: affected.map((post) => ({ id: post.id, updatedAt: post.updatedAt })),
+      posts: edits,
+      date: body.date,
+      datePostIds: body.date
+        ? idsWithChildren(roots.filter((post) => !removed.includes(post.id)))
+        : [],
+      removePostIds: idsWithChildren(roots.filter((post) => removed.includes(post.id))),
+    });
+
+    // Use the same terminate/restart path as changeDate(..., 'schedule').
+    // DRAFT terminates stale workflows without starting a publish; removals do too.
+    for (const root of affected) {
+      if (body.date || removed.includes(root.id)) {
+        await this.startWorkflow(
+          root.integration.providerIdentifier.split('-')[0].toLowerCase(),
+          root.id,
+          orgId,
+          removed.includes(root.id) ? 'DRAFT' : root.state
+        );
+      }
+    }
+    return this.getPublicPostGroup(orgId, group);
   }
 
   arrangePostsByGroup(all: any, parent?: string): PostWithConditionals[] {

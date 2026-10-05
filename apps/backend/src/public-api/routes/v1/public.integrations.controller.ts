@@ -223,6 +223,26 @@ export class PublicIntegrationsController {
     return this._postsService.deletePost(org.id, group);
   }
 
+  @Get('/posts/group/:group')
+  getPostGroup(
+    @GetOrgFromRequest() org: Organization,
+    @Param('group') group: string
+  ) {
+    Sentry.metrics.count('public_api-request', 1);
+    return this._postsService.getPublicPostGroup(org.id, group);
+  }
+
+  @Put('/posts/group/:group')
+  updatePostGroup(
+    @GetOrgFromRequest() org: Organization,
+    @Param('group') group: string,
+    // Validate in the service so DTO failures also use the public { msg } shape.
+    @Body() body: any
+  ) {
+    Sentry.metrics.count('public_api-request', 1);
+    return this._postsService.updatePublicPostGroup(org.id, group, body);
+  }
+
   @Get('/is-connected')
   async getActiveIntegrations(@GetOrgFromRequest() org: Organization) {
     Sentry.metrics.count('public_api-request', 1);

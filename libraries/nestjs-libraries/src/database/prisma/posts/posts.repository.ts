@@ -1,5 +1,8 @@
-import { PrismaRepository } from '@gitroom/nestjs-libraries/database/prisma/prisma.service';
-import { Injectable } from '@nestjs/common';
+import {
+  PrismaRepository,
+  PrismaTransaction,
+} from '@gitroom/nestjs-libraries/database/prisma/prisma.service';
+import { BadRequestException, ConflictException, Injectable } from '@nestjs/common';
 import { Post as PostBody } from '@gitroom/nestjs-libraries/dtos/posts/create.post.dto';
 import {
   APPROVED_SUBMIT_FOR_ORDER,
@@ -30,7 +33,8 @@ export class PostsRepository {
     private _comments: PrismaRepository<'comments'>,
     private _tags: PrismaRepository<'tags'>,
     private _tagsPosts: PrismaRepository<'tagsPosts'>,
-    private _errors: PrismaRepository<'errors'>
+    private _errors: PrismaRepository<'errors'>,
+    private _transaction: PrismaTransaction
   ) {}
 
   searchForMissingThreeHoursPosts() {
@@ -355,6 +359,90 @@ export class PostsRepository {
           },
         },
       },
+    });
+  }
+
+  updatePostGroup(
+    orgId: string,
+    group: string,
+    changes: {
+      roots: Pick<Post, 'id' | 'updatedAt'>[];
+      posts: { id: string; content: string }[];
+      date?: string;
+      datePostIds: string[];
+      removePostIds: string[];
+    }
+  ) {
+    return this._transaction.model.$transaction(async (tx) => {
+      const now = new Date();
+      if (changes.date && new Date(changes.date).getTime() <= now.getTime()) {
+        throw new BadRequestException({ msg: 'date must be in the future' });
+      }
+      // Claim every affected root against the snapshot that was validated.
+      // A concurrent edit/publish or crossing the guard rolls back the whole PUT.
+      for (const root of changes.roots) {
+        const edit = changes.posts.find((post) => post.id === root.id);
+        const removed = changes.removePostIds.includes(root.id);
+        const claimed = await tx.post.updateMany({
+          where: {
+            id: root.id,
+            organizationId: orgId,
+            group,
+            parentPostId: null,
+            deletedAt: null,
+            updatedAt: root.updatedAt,
+            state: { in: ['QUEUE', 'DRAFT'] },
+            publishDate: { gte: new Date(now.getTime() + 5 * 60 * 1000) },
+          },
+          data: {
+            updatedAt: now,
+            ...(edit ? { content: edit.content } : {}),
+            ...(removed ? { deletedAt: now } : {}),
+            ...(changes.date && !removed
+              ? {
+                  publishDate: new Date(changes.date),
+                  releaseId: null,
+                  releaseURL: null,
+                }
+              : {}),
+          },
+        });
+        if (claimed.count !== 1) {
+          throw new ConflictException({ error: 'publishing' });
+        }
+      }
+
+      const childDateIds = changes.datePostIds.filter(
+        (id) => !changes.roots.some((root) => root.id === id)
+      );
+      if (changes.date && childDateIds.length) {
+        await tx.post.updateMany({
+          where: {
+            organizationId: orgId,
+            group,
+            deletedAt: null,
+            id: { in: childDateIds },
+          },
+          data: {
+            publishDate: new Date(changes.date),
+            releaseId: null,
+            releaseURL: null,
+          },
+        });
+      }
+      if (changes.removePostIds.length) {
+        await tx.post.updateMany({
+          where: {
+            organizationId: orgId,
+            group,
+            deletedAt: null,
+            id: { in: changes.removePostIds },
+          },
+          data: { deletedAt: now },
+        });
+      }
+      // Same stable-group semantics as keepGroup=true, without the upsert's
+      // group-wide sweep or rewriting images/settings/tags/children.
     });
   }
 
