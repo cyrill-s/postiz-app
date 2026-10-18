@@ -4,17 +4,42 @@ import {
   PostResponse,
   SocialProvider,
 } from '@gitroom/nestjs-libraries/integrations/social/social.integrations.interface';
-import { makeId } from '@gitroom/nestjs-libraries/services/make.is';
+import { makeSecureId } from '@gitroom/nestjs-libraries/services/make.secure.id';
 import dayjs from 'dayjs';
-import { SocialAbstract } from '@gitroom/nestjs-libraries/integrations/social.abstract';
+import {
+  BadBody,
+  RefreshToken,
+  SocialAbstract,
+} from '@gitroom/nestjs-libraries/integrations/social.abstract';
 import { createHash, randomBytes } from 'crypto';
 import FormDataNew from 'form-data';
 import mime from 'mime-types';
 import { Integration } from '@prisma/client';
 import { hasExtension } from '@gitroom/helpers/utils/has.extension';
 
+// VK returns HTTP 200 for API errors, so both VK providers must inspect the body.
+export function checkVkApiError(
+  identifier: string,
+  all: any,
+  retryCodes = [6, 9, 29]
+) {
+  if (!all?.error) {
+    return;
+  }
+  const json = JSON.stringify(all);
+  const message = all.error.error_msg || 'VK rejected the request';
+  const code = Number(all.error.error_code);
+  if (code === 5) {
+    throw new RefreshToken(identifier, json, Buffer.from('{}'), message);
+  }
+  if (retryCodes.includes(code)) {
+    throw new Error(message);
+  }
+  throw new BadBody(identifier, json, Buffer.from('{}'), message);
+}
+
 export class VkProvider extends SocialAbstract implements SocialProvider {
-  override maxConcurrentJob = 2; // VK has moderate API limits
+  override maxConcurrentJob = 5; // VK limits are per user token
   identifier = 'vk';
   name = 'VK';
   isBetweenSteps = false;
@@ -40,7 +65,7 @@ export class VkProvider extends SocialAbstract implements SocialProvider {
     formData.append('refresh_token', oldRefreshToken);
     formData.append('client_id', process.env.VK_ID!);
     formData.append('device_id', device_id);
-    formData.append('state', makeId(32));
+    formData.append('state', makeSecureId(32));
     formData.append('scope', this.scopes.join(' '));
 
     const { access_token, refresh_token, expires_in } = await (
@@ -75,7 +100,7 @@ export class VkProvider extends SocialAbstract implements SocialProvider {
   }
 
   async generateAuthUrl() {
-    const state = makeId(32);
+    const state = makeSecureId(32);
     const codeVerifier = randomBytes(64).toString('base64url');
     const challenge = Buffer.from(
       createHash('sha256').update(codeVerifier).digest()
@@ -229,6 +254,7 @@ export class VkProvider extends SocialAbstract implements SocialProvider {
     );
   }
 
+
   async post(
     userId: string,
     accessToken: string,
@@ -249,7 +275,7 @@ export class VkProvider extends SocialAbstract implements SocialProvider {
       );
     }
 
-    const { response } = await (
+    const all = await (
       await this.fetch(
         `https://api.vk.com/method/wall.post?v=5.251&access_token=${accessToken}&client_id=${process.env.VK_ID}`,
         {
@@ -258,6 +284,8 @@ export class VkProvider extends SocialAbstract implements SocialProvider {
         }
       )
     ).json();
+    checkVkApiError(this.identifier, all);
+    const { response } = all;
 
     return [
       {
@@ -293,7 +321,7 @@ export class VkProvider extends SocialAbstract implements SocialProvider {
       );
     }
 
-    const { response } = await (
+    const all = await (
       await this.fetch(
         `https://api.vk.com/method/wall.createComment?v=5.251&access_token=${accessToken}&client_id=${process.env.VK_ID}`,
         {
@@ -302,6 +330,8 @@ export class VkProvider extends SocialAbstract implements SocialProvider {
         }
       )
     ).json();
+    checkVkApiError(this.identifier, all);
+    const { response } = all;
 
     return [
       {

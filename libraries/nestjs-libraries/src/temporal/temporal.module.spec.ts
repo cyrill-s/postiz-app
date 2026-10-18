@@ -4,19 +4,20 @@ jest.mock('@gitroom/nestjs-libraries/integrations/integration.manager', () => ({
   { identifier: 'ok-community', maxConcurrentJob: 1 }, { identifier: 'telegram', maxConcurrentJob: 10 },
 ] }));
 import { getTemporalModule } from './temporal.module';
+import { emailQueues } from './email.queues';
 describe('Temporal provider queue routing', () => {
   const original = { ...process.env };
   beforeEach(() => { delete process.env.EXCLUDE_QUEUE; delete process.env.TEMPORAL_WORKFLOW_BUNDLE; delete process.env.TEMPORAL_LOW_MEMORY; delete process.env.WORKER_CONCURRENCY_DIVIDER; });
   afterAll(() => { process.env = original; });
   it('registers root queues for standalone variants and deduplicates aliases', () => {
     const config = getTemporalModule(true, '/workflows', []) as any;
-    expect(config.workers.map((w: any) => w.taskQueue)).toEqual(['main','vk','ok','telegram']);
+    expect(config.workers.map((w: any) => w.taskQueue)).toEqual(['main','vk','ok','telegram', ...Object.values(emailQueues).map((q) => q.taskQueue)]);
     expect(config.workers.find((w: any) => w.taskQueue === 'vk').workerOptions.maxConcurrentActivityTaskExecutions).toBe(1);
   });
   it('preserves queue exclusions and activity concurrency division', () => {
     process.env.EXCLUDE_QUEUE = 'vk'; process.env.WORKER_CONCURRENCY_DIVIDER = '2';
     const config = getTemporalModule(true, '/workflows', []) as any;
-    expect(config.workers.map((w: any) => w.taskQueue)).toEqual(['main','ok','telegram']);
+    expect(config.workers.map((w: any) => w.taskQueue)).toEqual(['main','ok','telegram', ...Object.values(emailQueues).map((q) => q.taskQueue)]);
     expect(config.workers.find((w: any) => w.taskQueue === 'telegram').workerOptions.maxConcurrentActivityTaskExecutions).toBe(5);
   });
   it('uses a prebuilt bundle without runtime compilation and bounds memory/concurrency', () => {
@@ -26,7 +27,9 @@ describe('Temporal provider queue routing', () => {
       expect(worker.workflowsPath).toBeUndefined();
       if (worker.taskQueue === 'main') expect(worker.workflowBundle).toEqual({ codePath: '/bundle.js' });
       else expect(worker.workflowBundle).toBeUndefined();
-      expect(worker.workerOptions).toMatchObject({ maxCachedWorkflows: 10, maxConcurrentWorkflowTaskExecutions: 2, workflowThreadPoolSize: 1, reuseV8Context: true });
+      const emailQueue = Object.values(emailQueues).find((q) => q.taskQueue === worker.taskQueue);
+      if (emailQueue) expect(worker.workerOptions.maxTaskQueueActivitiesPerSecond).toBe(emailQueue.perSecond);
+      else expect(worker.workerOptions).toMatchObject({ maxCachedWorkflows: 10, maxConcurrentWorkflowTaskExecutions: 2, workflowThreadPoolSize: 1, reuseV8Context: true });
       expect(worker.workerOptions.maxConcurrentActivityTaskExecutions).toBeLessThanOrEqual(4);
     }
   });

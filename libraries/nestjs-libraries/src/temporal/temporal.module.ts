@@ -1,6 +1,7 @@
 import { temporalQueues } from './temporal.queues';
 import { TemporalModule } from 'nestjs-temporal-core';
 import { socialIntegrationList } from '@gitroom/nestjs-libraries/integrations/integration.manager';
+import { emailQueues } from '@gitroom/nestjs-libraries/temporal/email.queues';
 
 export const getTemporalModule = (
   isWorkers: boolean,
@@ -38,68 +39,67 @@ export const getTemporalModule = (
     logLevel: 'error',
     ...(isWorkers
       ? {
-          workers: temporalQueues([
-            { identifier: 'main', maxConcurrentJob: undefined },
-            ...socialIntegrationList,
-          ])
-            .map((integration) => ({
-              integration,
-              taskQueue: integration.identifier.split('-')[0],
-            }))
-            .filter(({ taskQueue }) => !excludeQueues.includes(taskQueue))
-            .map(({ integration, taskQueue }) => {
-              // Split the per-provider cap across the servers sharing this
-              // queue. Floor (never below 1) so the global total never exceeds
-              // the provider's limit. Providers whose limit is smaller than the
-              // server count must be pinned via EXCLUDE_QUEUE instead.
-              const concurrency = integration.maxConcurrentJob
-                ? Math.max(
-                    1,
-                    Math.floor(integration.maxConcurrentJob / divider)
-                  )
-                : undefined;
+          workers: [
+            ...temporalQueues([
+              { identifier: 'main', maxConcurrentJob: undefined },
+              ...socialIntegrationList,
+            ])
+              .filter(({ identifier }) => !excludeQueues.includes(identifier))
+              .map((integration) => {
+                const taskQueue = integration.identifier;
+                // Split the per-provider cap across the servers sharing this queue.
+                const concurrency = integration.maxConcurrentJob
+                  ? Math.max(
+                      1,
+                      Math.floor(integration.maxConcurrentJob / divider)
+                    )
+                  : undefined;
 
-              // Workflows only ever run on the `main` queue; the other Workers
-              // are activity-only, so skip the workflow bundle (webpack build,
-              // workflow thread + V8 isolate, sticky cache) on them.
-              return {
+                return {
+                  taskQueue,
+                  // Only main runs workflows; provider workers are activity-only.
+                  ...(taskQueue !== 'main'
+                    ? {}
+                    : process.env.TEMPORAL_WORKFLOW_BUNDLE
+                    ? {
+                        workflowBundle: {
+                          codePath: process.env.TEMPORAL_WORKFLOW_BUNDLE,
+                        },
+                      }
+                    : { workflowsPath: path! }),
+                  activityClasses: activityClasses!,
+                  autoStart: true,
+                  workerOptions: {
+                    maxConcurrentActivityTaskExecutions:
+                      process.env.TEMPORAL_LOW_MEMORY === 'true'
+                        ? Math.min(concurrency || 4, 4)
+                        : concurrency || 1000000,
+                    ...(process.env.TEMPORAL_LOW_MEMORY === 'true'
+                      ? {
+                          maxCachedWorkflows: 10,
+                          maxConcurrentWorkflowTaskExecutions: 2,
+                          workflowThreadPoolSize: 1,
+                          reuseV8Context: true,
+                        }
+                      : {}),
+                    maxHeartbeatThrottleInterval: '15s',
+                  },
+                };
+              }),
+            // Email activity queues keep upstream's server-side rate limits.
+            ...Object.values(emailQueues)
+              .filter(({ taskQueue }) => !excludeQueues.includes(taskQueue))
+              .map(({ taskQueue, perSecond }) => ({
                 taskQueue,
-                // All workflow starts use main; provider queues receive only
-                // activities (see posts.service startWorkflow/proxyTaskQueue).
-                // Avoid a separate workflow VM for each provider on small VPSes.
-                ...(taskQueue !== 'main'
-                  ? {}
-                  : process.env.TEMPORAL_WORKFLOW_BUNDLE
-                  ? {
-                      workflowBundle: {
-                        codePath: process.env.TEMPORAL_WORKFLOW_BUNDLE,
-                      },
-                    }
-                  : { workflowsPath: path! }),
                 activityClasses: activityClasses!,
                 autoStart: true,
                 workerOptions: {
                   maxConcurrentActivityTaskExecutions:
-                    process.env.TEMPORAL_LOW_MEMORY === 'true'
-                      ? Math.min(concurrency || 4, 4)
-                      : concurrency || 1000000,
-                  ...(process.env.TEMPORAL_LOW_MEMORY === 'true'
-                    ? {
-                        maxCachedWorkflows: 10,
-                        maxConcurrentWorkflowTaskExecutions: 2,
-                        workflowThreadPoolSize: 1,
-                        reuseV8Context: true,
-                      }
-                    : {}),
-                  // By default the SDK throttles heartbeat sends to 60s, so
-                  // against the workflow's heartbeatTimeout one dropped send
-                  // or a minute of event-loop lag eats most of the margin.
-                  // Sending every 15s keeps the recorded heartbeat fresh even
-                  // when individual sends fail or fire late.
-                  maxHeartbeatThrottleInterval: '15s',
+                    process.env.TEMPORAL_LOW_MEMORY === 'true' ? 4 : 10,
+                  maxTaskQueueActivitiesPerSecond: perSecond,
                 },
-              };
-            }),
+              })),
+          ],
         }
       : {}),
   });

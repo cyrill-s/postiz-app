@@ -8,6 +8,8 @@ import {
   PrismaTransaction,
 } from '@gitroom/nestjs-libraries/database/prisma/prisma.service';
 import { OAuthRepository } from '@gitroom/nestjs-libraries/database/prisma/oauth/oauth.repository';
+import { McpRelayService } from '@gitroom/nestjs-libraries/chat/mcp.relay.service';
+import { ThrottlerRealIpGuard } from '@gitroom/nestjs-libraries/throttler/throttler.provider';
 import { OAuthService } from '@gitroom/nestjs-libraries/database/prisma/oauth/oauth.service';
 import { AuthService } from '@gitroom/helpers/auth/auth.service';
 import {
@@ -18,6 +20,8 @@ import { OAuthController } from '../../api/routes/oauth.controller';
 import { JulsAuthGuard } from './juls-auth.guard';
 import { JulsWorkspaceService } from './juls-workspace.service';
 import { AuthMiddleware } from '../auth/auth.middleware';
+
+jest.mock('@gitroom/nestjs-libraries/chat/mcp.relay.service', () => ({ McpRelayService: class {} }));
 
 // Those services have unrelated remote dependencies. The middleware's reads use the test DB.
 jest.mock(
@@ -139,7 +143,8 @@ suite('Juls workspace HTTP contract (isolated PostgreSQL)', () => {
       new OAuthRepository(
         new PrismaRepository(prisma),
         new PrismaRepository(prisma),
-        new PrismaTransaction(prisma)
+        new PrismaTransaction(prisma),
+        new PrismaRepository(prisma)
       )
     );
     const module = await Test.createTestingModule({
@@ -149,8 +154,9 @@ suite('Juls workspace HTTP contract (isolated PostgreSQL)', () => {
         { provide: PrismaService, useValue: prisma },
         { provide: JulsWorkspaceService, useValue: service },
         { provide: OAuthService, useValue: oauth },
+        { provide: McpRelayService, useValue: {} },
       ],
-    }).compile();
+    }).overrideGuard(ThrottlerRealIpGuard).useValue({ canActivate: () => true }).compile();
     app = module.createNestApplication({ rawBody: true, logger: false });
     app.useGlobalPipes(new ValidationPipe({ transform: true }));
     await app.listen(0, '127.0.0.1');

@@ -1,18 +1,22 @@
-import { randomBytes } from 'crypto';
 import { HttpException, HttpStatus, Injectable } from '@nestjs/common';
 import { OAuthRepository } from '@gitroom/nestjs-libraries/database/prisma/oauth/oauth.repository';
 import { CreateOAuthAppDto } from '@gitroom/nestjs-libraries/dtos/oauth/create-oauth-app.dto';
 import { UpdateOAuthAppDto } from '@gitroom/nestjs-libraries/dtos/oauth/update-oauth-app.dto';
 import { RegisterClientDto } from '@gitroom/nestjs-libraries/dtos/oauth/register-client.dto';
-import { makeId } from '@gitroom/nestjs-libraries/services/make.is';
+import { makeSecureId } from '@gitroom/nestjs-libraries/services/make.secure.id';
 import { AuthService } from '@gitroom/helpers/auth/auth.service';
 import { extractBearerToken } from '@gitroom/nestjs-libraries/chat/oauth-types';
 import { createHash } from 'crypto';
 import { OAuthApp } from '@prisma/client';
+import type { SelfHostedInstance } from '@gitroom/nestjs-libraries/chat/mcp.relay.service';
 
 const openAiOAuthClientId = () => process.env.OPENAI_OAUTH_CLIENT_ID?.trim();
 
 const enableOidcEmailClaims = () => Boolean(openAiOAuthClientId());
+
+// Postiz Cloud only, a self-hosted install has nothing to relay to
+export const selfHostedRelayEnabled = () =>
+  process.env.MCP_SELF_HOSTED_RELAY === 'true';
 
 // Verified-domain match: exact host or a subdomain of it (spoof-safe, the
 // leading dot means evilclaude.ai and claude.ai.evil.com are both rejected)
@@ -54,8 +58,8 @@ export class OAuthService {
       );
     }
 
-    const clientId = 'pca_' + randomBytes(24).toString('hex');
-    const clientSecret = 'pcs_' + randomBytes(32).toString('hex');
+    const clientId = 'pca_' + makeSecureId(32);
+    const clientSecret = 'pcs_' + makeSecureId(48);
     const encryptedSecret = AuthService.fixedEncryption(clientSecret);
 
     const app = await this._oauthRepository.createApp(orgId, {
@@ -95,7 +99,7 @@ export class OAuthService {
       throw new HttpException('No OAuth app found', HttpStatus.NOT_FOUND);
     }
 
-    const newSecret = 'pcs_' + randomBytes(32).toString('hex');
+    const newSecret = 'pcs_' + makeSecureId(48);
     const encrypted = AuthService.fixedEncryption(newSecret);
     await this._oauthRepository.updateClientSecret(orgId, encrypted);
     return { clientSecret: newSecret };
@@ -204,8 +208,8 @@ export class OAuthService {
       : dto.token_endpoint_auth_method === 'client_secret_basic'
       ? 'client_secret_basic'
       : 'client_secret_post';
-    const clientId = 'pcd_' + makeId(32);
-    const clientSecret = isPublicClient ? undefined : 'pcs_' + makeId(48);
+    const clientId = 'pcd_' + makeSecureId(32);
+    const clientSecret = isPublicClient ? undefined : 'pcs_' + makeSecureId(48);
 
     const app = await this._oauthRepository.createDynamicApp({
       name: dto.client_name?.trim().slice(0, 100) || 'MCP Client',
@@ -278,6 +282,54 @@ export class OAuthService {
     ].join(' ');
   }
 
+  // Only MCP connections can be relayed to an instance: dynamically registered
+  // clients (registration is only advertised to MCP clients), the ChatGPT app,
+  // or a client asking for one of the /mcp-oauth resources (RFC 8707). Apps
+  // that use Postiz OAuth for the public API never get the option, a relayed
+  // token doesn't work there
+  allowsSelfHosted(
+    app: Pick<OAuthApp, 'clientId' | 'dynamic'>,
+    resource?: string
+  ) {
+    if (!selfHostedRelayEnabled()) {
+      return false;
+    }
+    if (app.dynamic || app.clientId === openAiOAuthClientId()) {
+      return true;
+    }
+    try {
+      return !!resource && new URL(resource).pathname.startsWith('/mcp-oauth');
+    } catch {
+      return false;
+    }
+  }
+
+  // The ChatGPT app reads the email from userinfo; a self-hosted connection
+  // has no cloud user to take it from, so the consent screen asks for one
+  selfHostedRequiresEmail(app: Pick<OAuthApp, 'clientId'>) {
+    return enableOidcEmailClaims() && app.clientId === openAiOAuthClientId();
+  }
+
+  // On top of validateAuthorizationRequest, for a self-hosted connection
+  validateSelfHostedRequest(
+    app: Pick<OAuthApp, 'clientId' | 'dynamic'>,
+    options: { resource?: string; email?: string }
+  ) {
+    if (!this.allowsSelfHosted(app, options.resource)) {
+      throw new HttpException(
+        'This application can not connect to a self-hosted instance',
+        HttpStatus.BAD_REQUEST
+      );
+    }
+
+    if (!options.email && this.selfHostedRequiresEmail(app)) {
+      throw new HttpException(
+        'Enter your email address',
+        HttpStatus.BAD_REQUEST
+      );
+    }
+  }
+
   async validateAuthorizationRequest(
     clientId: string,
     options?: {
@@ -329,7 +381,7 @@ export class OAuthService {
       redirectUri?: string;
     }
   ) {
-    const code = randomBytes(32).toString('base64url');
+    const code = makeSecureId(32);
     const encryptedCode = AuthService.fixedEncryption(code);
     const codeExpiresAt = new Date(Date.now() + 10 * 60 * 1000);
 
@@ -339,6 +391,40 @@ export class OAuthService {
       organizationId,
       authorizationCode: encryptedCode,
       codeExpiresAt,
+      codeChallenge: pkce?.codeChallenge,
+      codeChallengeMethod: pkce?.codeChallengeMethod,
+      redirectUri: pkce?.redirectUri,
+    });
+
+    return code;
+  }
+
+  async createSelfHostedAuthorizationCode(
+    oauthAppId: string,
+    instance: SelfHostedInstance & { email?: string },
+    pkce?: {
+      codeChallenge?: string;
+      codeChallengeMethod?: string;
+      redirectUri?: string;
+    }
+  ) {
+    this._oauthRepository
+      .deleteAbandonedSelfHostedAuthorizations(
+        new Date(Date.now() - 24 * 60 * 60 * 1000)
+      )
+      .catch(() => {});
+
+    // The prefix sends the code to the self-hosted table at the token
+    // endpoint (regular codes use the same alphabet, without an underscore)
+    const code = 'psc_' + makeSecureId(32);
+
+    await this._oauthRepository.createSelfHostedAuthorization({
+      oauthAppId,
+      mcpUrl: instance.mcpUrl,
+      apiKey: AuthService.fixedEncryption(instance.apiKey),
+      email: instance.email,
+      authorizationCode: AuthService.fixedEncryption(code),
+      codeExpiresAt: new Date(Date.now() + 10 * 60 * 1000),
       codeChallenge: pkce?.codeChallenge,
       codeChallengeMethod: pkce?.codeChallengeMethod,
       redirectUri: pkce?.redirectUri,
@@ -379,7 +465,7 @@ export class OAuthService {
       }
     }
 
-    const token = 'pos_' + randomBytes(32).toString('base64url');
+    const token = 'pos_' + makeSecureId(40);
     const encryptedToken = AuthService.fixedEncryption(token);
     const managed = await this._oauthRepository.exchangeJulsCode(
       code,
@@ -392,7 +478,17 @@ export class OAuthService {
         cus: managed.organization.paymentId,
         access_token: AuthService.fixedDecryption(managed.accessToken),
         token_type: 'bearer',
+        scope: this.grantedScope(app),
       };
+    }
+
+    if (code.startsWith('psc_')) {
+      return this.exchangeSelfHostedCodeForToken(
+        app,
+        code,
+        codeVerifier,
+        redirectUri
+      );
     }
 
     const encryptedCode = AuthService.fixedEncryption(code);
@@ -404,6 +500,44 @@ export class OAuthService {
       );
     }
 
+    this.verifyCodeGrant(auth, codeVerifier, redirectUri);
+
+    const exchanged = await this._oauthRepository.exchangeCodeForToken(
+      auth.id,
+      encryptedCode,
+      encryptedToken
+    );
+    if (!exchanged) {
+      throw new HttpException(
+        { error: 'invalid_grant' },
+        HttpStatus.BAD_REQUEST
+      );
+    }
+    const {
+      organizationId,
+      organization: { paymentId },
+    } = exchanged;
+
+    return {
+      id: organizationId,
+      cus: paymentId,
+      access_token: token,
+      token_type: 'bearer',
+      scope: this.grantedScope(app),
+    };
+  }
+
+  // Expiry, PKCE and redirect_uri checks of an authorization code, shared by
+  // cloud and self-hosted authorizations
+  private verifyCodeGrant(
+    auth: {
+      codeExpiresAt: Date | null;
+      codeChallenge: string | null;
+      redirectUri: string | null;
+    },
+    codeVerifier?: string,
+    redirectUri?: string
+  ) {
     if (!auth.codeExpiresAt || new Date() > auth.codeExpiresAt) {
       throw new HttpException(
         { error: 'invalid_grant', error_description: 'Code has expired' },
@@ -445,29 +579,64 @@ export class OAuthService {
         HttpStatus.BAD_REQUEST
       );
     }
+  }
 
-    const exchanged = await this._oauthRepository.exchangeCodeForToken(
-      auth.id,
-      encryptedCode,
-      encryptedToken
+  // A self-hosted connection has no organization (or payment) to return,
+  // only the token
+  private async exchangeSelfHostedCodeForToken(
+    app: OAuthApp,
+    code: string,
+    codeVerifier?: string,
+    redirectUri?: string
+  ) {
+    const auth = await this._oauthRepository.findSelfHostedByCode(
+      AuthService.fixedEncryption(code)
     );
-    if (!exchanged)
+    if (!auth || auth.oauthAppId !== app.id) {
       throw new HttpException(
         { error: 'invalid_grant' },
         HttpStatus.BAD_REQUEST
       );
-    const {
-      organizationId,
-      organization: { paymentId },
-    } = exchanged;
+    }
+
+    this.verifyCodeGrant(auth, codeVerifier, redirectUri);
+
+    const token = 'psh_' + makeSecureId(40);
+    await this._oauthRepository.exchangeSelfHostedCodeForToken(
+      auth.id,
+      AuthService.fixedEncryption(token)
+    );
 
     return {
-      id: organizationId,
-      cus: paymentId,
       access_token: token,
       token_type: 'bearer',
       scope: this.grantedScope(app),
     };
+  }
+
+  // null when the relay is off or the token is unknown or revoked
+  async getSelfHostedByAccessToken(token: string) {
+    if (!selfHostedRelayEnabled()) {
+      return null;
+    }
+
+    const authorization =
+      await this._oauthRepository.findSelfHostedByAccessToken(
+        AuthService.fixedEncryption(token)
+      );
+    if (!authorization) {
+      return null;
+    }
+
+    return {
+      id: authorization.id,
+      mcpUrl: authorization.mcpUrl,
+      apiKey: AuthService.fixedDecryption(authorization.apiKey),
+    };
+  }
+
+  deleteSelfHostedAuthorization(id: string) {
+    return this._oauthRepository.deleteSelfHostedAuthorization(id);
   }
 
   async getOrgByOAuthToken(token: string) {
@@ -492,6 +661,10 @@ export class OAuthService {
         { error: 'invalid_token', error_description: 'Bearer token required' },
         HttpStatus.UNAUTHORIZED
       );
+    }
+
+    if (token.startsWith('psh_')) {
+      return this.getSelfHostedUserInfo(token);
     }
 
     const authorizationRecord = await this.getOrgByOAuthToken(token);
@@ -521,6 +694,40 @@ export class OAuthService {
       sub: user.id,
       email: user.email,
       email_verified: user.activated,
+    };
+  }
+
+  // A self-hosted connection has no cloud user: the subject is the connection
+  // and the email is the one typed on the consent screen, which nobody verified
+  private async getSelfHostedUserInfo(token: string) {
+    const selfHosted = selfHostedRelayEnabled()
+      ? await this._oauthRepository.findSelfHostedUserInfo(
+          AuthService.fixedEncryption(token)
+        )
+      : null;
+    if (!selfHosted) {
+      throw new HttpException(
+        { error: 'invalid_token', error_description: 'Token is invalid or revoked' },
+        HttpStatus.UNAUTHORIZED
+      );
+    }
+
+    if (!this.allowsEmailClaims(selfHosted.oauthApp)) {
+      throw new HttpException(
+        {
+          error: 'insufficient_scope',
+          error_description:
+            'This OAuth client is not authorized to access email claims',
+        },
+        HttpStatus.FORBIDDEN
+      );
+    }
+
+    return {
+      sub: selfHosted.id,
+      ...(selfHosted.email
+        ? { email: selfHosted.email, email_verified: false }
+        : {}),
     };
   }
 

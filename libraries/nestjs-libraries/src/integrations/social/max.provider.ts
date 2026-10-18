@@ -2,7 +2,7 @@ import { compileSocialContent } from '@gitroom/helpers/utils/social-formatting';
 import { AuthService } from '@gitroom/helpers/auth/auth.service';
 import { timer } from '@gitroom/helpers/utils/timer';
 import { getSsrfSafeDispatcher } from '@gitroom/nestjs-libraries/dtos/webhooks/ssrf.safe.dispatcher';
-import { makeId } from '@gitroom/nestjs-libraries/services/make.is';
+import { makeSecureId } from '@gitroom/nestjs-libraries/services/make.secure.id';
 import {
   BadBody,
   RefreshToken,
@@ -71,8 +71,8 @@ export class MaxProvider extends SocialAbstract implements SocialProvider {
   }
 
   async generateAuthUrl() {
-    const state = makeId(32);
-    return { state, url: state, codeVerifier: makeId(32) };
+    const state = makeSecureId(32);
+    return { state, url: state, codeVerifier: makeSecureId(32) };
   }
 
   async refreshToken(): Promise<AuthTokenDetails> {

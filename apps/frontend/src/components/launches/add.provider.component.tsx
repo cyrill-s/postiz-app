@@ -209,13 +209,15 @@ export const CustomVariables: FC<{
   });
   const submit = useCallback(
     async (data: FieldValues) => {
-      const { url } = await (
-        await fetch(
-          `/integrations/social/${identifier}${
-            onboarding ? '?onboarding=true' : ''
-          }`
-        )
-      ).json();
+      const authResponse = await fetch(
+        `/integrations/social/${identifier}${
+          onboarding ? '?onboarding=true' : ''
+        }`
+      );
+      if (authResponse.status === 402) {
+        return;
+      }
+      const { url } = await authResponse.json();
       // Credentials belong in the POST body, never browser history or callback URLs.
       const response = await fetch(`/integrations/social-connect/${identifier}`, {
         method: 'POST',
@@ -461,13 +463,15 @@ export const AddProviderComponent: FC<{
           const { component: Web3Providers } = web3List.find(
             (item) => item.identifier === identifier
           )!;
-          const { url } = await (
-            await fetch(
-              `/integrations/social/${identifier}${
-                onboarding ? '?onboarding=true' : ''
-              }`
-            )
-          ).json();
+          const response = await fetch(
+            `/integrations/social/${identifier}${
+              onboarding ? '?onboarding=true' : ''
+            }`
+          );
+          if (response.status === 402) {
+            return;
+          }
+          const { url } = await response.json();
           modal.openModal({
             title: `Add ${capitalize(identifier)}`,
             withCloseButton: true,
@@ -506,11 +510,13 @@ export const AddProviderComponent: FC<{
           ]
             .filter(Boolean)
             .join('&');
-          const { url, err } = await (
-            await fetch(
-              `/integrations/social/${identifier}${params ? `?${params}` : ''}`
-            )
-          ).json();
+          const response = await fetch(
+            `/integrations/social/${identifier}${params ? `?${params}` : ''}`
+          );
+          if (response.status === 402) {
+            return;
+          }
+          const { url, err } = await response.json();
           if (err) {
             toaster.show(
               t(
@@ -576,7 +582,11 @@ export const AddProviderComponent: FC<{
           if (!confirmed) {
             return;
           }
-          if (!extensionId || !chrome?.runtime?.sendMessage) {
+          if (
+            !extensionId ||
+            typeof chrome === 'undefined' ||
+            !chrome?.runtime?.sendMessage
+          ) {
             modal.openModal({
               title: t('extension_not_available_title', 'Extension Not Found'),
               withCloseButton: true,
@@ -633,13 +643,15 @@ export const AddProviderComponent: FC<{
               );
               return;
             }
-            const { url } = await (
-              await fetch(
-                `/integrations/social/${identifier}${
-                  onboarding ? '?onboarding=true' : ''
-                }`
-              )
-            ).json();
+            const response = await fetch(
+              `/integrations/social/${identifier}${
+                onboarding ? '?onboarding=true' : ''
+              }`
+            );
+            if (response.status === 402) {
+              return;
+            }
+            const { url } = await response.json();
             modal.closeAll();
             window.location.href = `/integrations/social/${identifier}?state=${url}&code=${Buffer.from(
               JSON.stringify(cookieResponse.cookies)
@@ -704,7 +716,7 @@ export const AddProviderComponent: FC<{
           className={clsx(
             isMobile && 'gap-[20px] flex flex-col',
             !isMobile &&
-              'grid grid-cols-5 gap-[10px] justify-items-center justify-center',
+              'grid grid-cols-5 gap-[10px] justify-items-center justify-center mobile:!grid-cols-3',
             isMobile ? {} : onboarding ? 'grid-cols-9' : 'grid-cols-5'
           )}
         >
@@ -741,7 +753,7 @@ export const AddProviderComponent: FC<{
                 className={clsx(
                   isMobile
                     ? 'flex-row h-[72px] p-[16px]'
-                    : 'flex-col p-[10px] h-[100px] justify-center',
+                    : 'flex-col p-[10px] h-[100px] justify-center mobile:text-[13px] mobile:leading-[1.2]',
                   'w-full text-[14px] rounded-[8px] bg-newTableHeader text-textColor relative items-center flex gap-[10px] cursor-pointer'
                 )}
               >

@@ -278,7 +278,8 @@ export class PostActivity {
             true,
             false,
             !/<\/?[a-z][\s\S]*>/i.test(post.content),
-            provider.mentionFormat
+            provider.mentionFormat,
+            !!provider.inlineImages?.(JSON.parse(post.settings || '{}'))
           ),
       settings: {
         ...JSON.parse(post.settings || '{}'),
@@ -447,11 +448,12 @@ export class PostActivity {
     try {
       await this._temporalService.client
         .getRawClient()
-        .workflow.start('streakWorkflow', {
+        .workflow.start('streakWorkflowV2', {
           args: [{ organizationId: integration.organizationId }],
           workflowId: `streak_${integration.organizationId}`,
           taskQueue: 'main',
-          workflowIdConflictPolicy: 'TERMINATE_EXISTING',
+          // Keep a running streak, it checks for newer posts before it ends
+          workflowIdConflictPolicy: 'USE_EXISTING',
           typedSearchAttributes: new TypedSearchAttributes([
             {
               key: organizationId,
@@ -629,7 +631,10 @@ export class PostActivity {
 
       return refresh;
     } catch (err) {
-      await this._refreshIntegrationService.setBetweenSteps(integration);
+      await this._refreshIntegrationService.setBetweenSteps(
+        integration,
+        (err as Error)?.message || ''
+      );
       return false;
     }
   }
@@ -658,7 +663,10 @@ export class PostActivity {
 
       return refresh;
     } catch (err) {
-      await this._refreshIntegrationService.setBetweenSteps(integration, cause);
+      await this._refreshIntegrationService.setBetweenSteps(
+        integration,
+        cause || (err as Error)?.message || ''
+      );
       return false;
     }
   }

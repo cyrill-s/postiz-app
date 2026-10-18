@@ -5,7 +5,8 @@ import {
   PostResponse,
   SocialProvider,
 } from './social.integrations.interface';
-import { makeId } from '@gitroom/nestjs-libraries/services/make.is';
+import { makeSecureId } from '@gitroom/nestjs-libraries/services/make.secure.id';
+import { checkVkApiError } from './vk.provider';
 import { AuthService } from '@gitroom/helpers/auth/auth.service';
 
 const MEDIA_MESSAGE =
@@ -49,8 +50,8 @@ export class VkCommunityProvider
   }
 
   async generateAuthUrl() {
-    const state = makeId(32);
-    return { state, url: state, codeVerifier: makeId(32) };
+    const state = makeSecureId(32);
+    return { state, url: state, codeVerifier: makeSecureId(32) };
   }
 
   async authenticate(params: {
@@ -158,23 +159,18 @@ export class VkCommunityProvider
     const data = await response.json();
     if (data.error) {
       const code = Number(data.error.error_code);
-      if (code === 5)
-        throw new RefreshToken(
-          this.identifier,
-          '{}',
-          '{}',
-          'Ключ VK недействителен. Подключите сообщество заново.'
-        );
-      // Code 27 can mean an unsupported method, not an expired token. Do not
-      // disconnect a valid community key because an API method rejected group auth.
-      if (code === 27)
-        this.fail(
-          `VK не разрешает ${method} с этим ключом. Используйте ключ сообщества для поддерживаемых действий.`
-        );
-      if ([1, 6, 9, 10, 29].includes(code))
-        throw new Error(`VK ${method}: временная ошибка ${code}`);
-      this.fail(
-        `VK ${method}: ошибка ${code}. Проверьте права ключа сообщества.`
+      // Keep community-specific guidance, but never persist VK request_params:
+      // they can echo the decrypted community token.
+      const message =
+        code === 5
+          ? 'Ключ VK недействителен. Подключите сообщество заново.'
+          : code === 27
+          ? `VK не разрешает ${method} с этим ключом. Используйте ключ сообщества для поддерживаемых действий.`
+          : `VK ${method}: ошибка ${code}. Проверьте права ключа сообщества.`;
+      checkVkApiError(
+        this.identifier,
+        { error: { error_code: code, error_msg: message } },
+        [1, 6, 9, 10, 29]
       );
     }
     if (data.response === undefined)

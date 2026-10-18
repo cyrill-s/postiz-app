@@ -118,6 +118,21 @@ export class IntegrationRepository {
     });
   }
 
+  updateCustomName(org: string, id: string, name: string) {
+    return this._integration.model.integration.update({
+      select: {
+        id: true,
+      },
+      where: {
+        id,
+        organizationId: org,
+      },
+      data: {
+        customName: name.trim() || null,
+      },
+    });
+  }
+
   async setTimes(org: string, id: string, times: IntegrationTimeDto) {
     return this._integration.model.integration.update({
       select: {
@@ -363,7 +378,8 @@ export class IntegrationRepository {
         profile: username,
         providerIdentifier: provider,
         token,
-        refreshToken,
+        // never wipe a stored refresh token with an empty one
+        ...(refreshToken ? { refreshToken } : {}),
         ...(expiresIn
           ? { tokenExpiration: new Date(Date.now() + expiresIn * 1000) }
           : {}),
@@ -550,6 +566,28 @@ export class IntegrationRepository {
               },
             },
           },
+    });
+  }
+
+  getCustomerByName(orgId: string, name: string) {
+    return this._customers.model.customer.findFirst({
+      where: {
+        orgId,
+        name,
+        deletedAt: null,
+      },
+    });
+  }
+
+  updateCustomerName(orgId: string, id: string, name: string) {
+    return this._customers.model.customer.update({
+      where: {
+        id,
+        orgId,
+      },
+      data: {
+        name,
+      },
     });
   }
 
@@ -757,6 +795,9 @@ export class IntegrationRepository {
 
   deleteChannel(org: string, id: string) {
     return this._integration.model.integration.update({
+      select: {
+        id: true,
+      },
       where: {
         id,
         organizationId: org,
@@ -854,6 +895,19 @@ export class IntegrationRepository {
         },
       });
     }
+  }
+
+  enableAllIntegrations(org: string) {
+    return this._integration.model.integration.updateMany({
+      where: {
+        organizationId: org,
+        disabled: true,
+        deletedAt: null,
+      },
+      data: {
+        disabled: false,
+      },
+    });
   }
 
   getPlugsByIntegrationId(org: string, id: string) {

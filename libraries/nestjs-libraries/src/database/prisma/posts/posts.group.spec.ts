@@ -133,7 +133,9 @@ describe('public post group edit/cancel (service and scoped repository writes)',
     });
     repository = new PostsRepository(
       { model: { post: { findMany } } } as any,
-      {} as any, {} as any, {} as any, {} as any, {} as any,
+      {} as any,
+      { model: { comments: { findMany: jest.fn().mockResolvedValue([]) } } } as any,
+      {} as any, {} as any, {} as any,
       { model: { $transaction: transaction } } as any
     );
     list = jest.fn(({ query }) => (async function* () {
