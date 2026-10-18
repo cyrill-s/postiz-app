@@ -1,9 +1,15 @@
 name: Build custom image
 
-# Manual, amd64-only build of the fork's image from the selected branch.
+# amd64 build of the fork's image on every push to a custom/* branch.
 # Pushes ghcr.io/<owner>/postiz-app:<branch>-<sha7>.
 on:
+  push:
+    branches: ['custom/**']
   workflow_dispatch:
+
+concurrency:
+  group: build-custom-image-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
