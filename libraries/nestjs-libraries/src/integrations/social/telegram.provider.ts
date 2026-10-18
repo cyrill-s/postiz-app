@@ -402,7 +402,9 @@ export class TelegramProvider extends SocialAbstract implements SocialProvider {
     });
     let textMessageId: number;
     try {
-      textMessageId = (await this.sendMessage(accessToken, {
+      // Unwrapped: the original Telegram error tells a rejected text (safe to
+      // retry alone) from an unconfirmed delivery.
+      textMessageId = (await this.sendMessageInternal(accessToken, {
         ...post,
         media: [],
       }))!;

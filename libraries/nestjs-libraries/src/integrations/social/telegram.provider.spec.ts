@@ -52,11 +52,19 @@ describe('Telegram publishing', () => {
     };
     bot().sendPhoto.mockResolvedValue({ message_id: 10 });
     bot().sendMessage.mockRejectedValueOnce({
-      response: { body: { ok: false, description: 'Rejected' } },
+      code: 'ETELEGRAM',
+      response: {
+        body: {
+          ok: false,
+          error_code: 400,
+          description: 'Bad Request: message is too long',
+        },
+      },
     });
     await expect(
       new TelegramProvider().post('channel', '-100123', [post])
-    ).rejects.toThrow(/partially/i);
+    ).rejects.toThrow(/Retry only the text/);
+    expect(saved).toMatchObject({ phase: 'media-sent', mediaMessageId: 10 });
     expect(bot().sendPhoto).toHaveBeenCalledWith(
       '-100123',
       'https://example.org/photo.jpg',

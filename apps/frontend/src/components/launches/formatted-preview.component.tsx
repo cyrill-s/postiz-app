@@ -58,6 +58,7 @@ export function FormattedPreview({
           ) : null;
         const text = (
           <div
+            dir="auto"
             className="social-formatted-preview whitespace-pre-wrap break-words"
             onClick={(event) => {
               const spoiler = (
