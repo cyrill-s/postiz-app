@@ -29,6 +29,7 @@ import { MaxProvider } from './social/max.provider';
 import { TelegramProvider } from '@gitroom/nestjs-libraries/integrations/social/telegram.provider';
 import { NostrProvider } from '@gitroom/nestjs-libraries/integrations/social/nostr.provider';
 import { VkProvider } from '@gitroom/nestjs-libraries/integrations/social/vk.provider';
+import { VkCommunityOAuthProvider } from './social/vk.community.oauth.provider';
 import { VkCommunityProvider } from '@gitroom/nestjs-libraries/integrations/social/vk.community.provider';
 import { WordpressProvider } from '@gitroom/nestjs-libraries/integrations/social/wordpress.provider';
 import { ListmonkProvider } from '@gitroom/nestjs-libraries/integrations/social/listmonk.provider';
@@ -70,6 +71,7 @@ export const socialIntegrationList: Array<SocialAbstract & SocialProvider> = [
   new NostrProvider(),
   new VkProvider(),
   new VkCommunityProvider(),
+  new VkCommunityOAuthProvider(),
   new OkCommunityProvider(),
   new MediumProvider(),
   new DevToProvider(),
@@ -101,13 +103,25 @@ export class IntegrationManager {
   // Note: a target provider that implements `reConnect` is not supported - the
   // connect callback would run reConnect with the old app-scoped id before the
   // migration is attempted.
-  getMigrationTarget(identifier: string): string | undefined {
-    const [, target] =
+  getMigrationTarget(
+    identifier: string,
+    internalId?: string
+  ): string | undefined {
+    const scopedTarget = (process.env.MIGRATE_CHANNELS || '')
+      .split(',')
+      .map((pair) => pair.trim().split('='))
+      .find(
+        ([channel]) =>
+          channel === internalId && channel.startsWith(identifier + ':')
+      )?.[1];
+
+    const [, providerTarget] =
       (process.env.MIGRATE_PROVIDERS || '')
         .split(',')
         .map((p) => p.trim().split(':'))
         .find(([from, to]) => from === identifier && !!to) || [];
 
+    const target = scopedTarget || providerTarget;
     return target &&
       target !== identifier &&
       this.getAllowedSocialsIntegrations().includes(target)
@@ -135,7 +149,7 @@ export class IntegrationManager {
     return {
       social: await Promise.all(
         socialIntegrationList
-          .filter((p) => !this.isHiddenProvider(p.identifier))
+          .filter((p) => !p.reconnectOnly && !this.isHiddenProvider(p.identifier))
           .map(async (p) => ({
             name: p.name,
             identifier: p.identifier,

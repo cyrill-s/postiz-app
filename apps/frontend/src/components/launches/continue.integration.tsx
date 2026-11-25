@@ -81,7 +81,7 @@ export const ContinueIntegration: FC<{
       };
     }
 
-    if (provider === 'vk') {
+    if (provider === 'vk' || provider === 'vk-community-oauth') {
       return {
         ...searchParams,
         state: searchParams.state || '',

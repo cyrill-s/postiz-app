@@ -109,6 +109,10 @@ export class IntegrationsController {
             identifier: p.providerIdentifier,
             inBetweenSteps: p.inBetweenSteps,
             refreshNeeded: p.refreshNeeded,
+            reconnectTarget: this._integrationManager.getMigrationTarget(
+              p.providerIdentifier,
+              p.internalId
+            ),
             isCustomFields: !!findIntegration.customFields,
             ...(findIntegration.customFields
               ? { customFields: await findIntegration.customFields() }
@@ -215,7 +219,7 @@ export class IntegrationsController {
     // provider's OAuth: the callback lands on the target and the channel is
     // migrated in place (see migrateIntegration).
     const migrateTo = refresh
-      ? this._integrationManager.getMigrationTarget(integration)
+      ? this._integrationManager.getMigrationTarget(integration, refresh)
       : undefined;
 
     const integrationProvider = this._integrationManager.getSocialIntegration(

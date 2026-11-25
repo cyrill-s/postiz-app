@@ -284,7 +284,7 @@ export class PublicIntegrationsController {
     // provider's OAuth: the callback lands on the target and the channel is
     // migrated in place (see migrateIntegration).
     const migrateTo = refresh
-      ? this._integrationManager.getMigrationTarget(integration)
+      ? this._integrationManager.getMigrationTarget(integration, refresh)
       : undefined;
 
     const integrationProvider = this._integrationManager.getSocialIntegration(

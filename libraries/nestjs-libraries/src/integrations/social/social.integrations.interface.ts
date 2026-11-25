@@ -11,6 +11,8 @@ export interface IAuthenticator {
       code: string;
       codeVerifier: string;
       refresh?: string;
+      state?: string;
+      reconnectId?: string;
     },
     clientInformation?: ClientInformation
   ): Promise<AuthTokenDetails | string>;
@@ -171,6 +173,7 @@ export interface SocialProvider
   extends IAuthenticator,
     ISocialMediaIntegration {
   identifier: string;
+  reconnectOnly?: boolean;
   refreshWait?: boolean;
   convertToJPEG?: boolean;
   stripLinks?: () => boolean;
@@ -189,7 +192,7 @@ export interface SocialProvider
   ): Promise<PendingCheckResponse>;
   migrationMatch(
     auth: Pick<AuthTokenDetails, 'id' | 'username'>,
-    integration: Integration
+    integration: Pick<Integration, 'profile' | 'internalId'>
   ): boolean;
   finalizePost(
     accessToken: string,

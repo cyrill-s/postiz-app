@@ -411,8 +411,8 @@ export const Menu: FC<{
             <div className="text-[14px]">{t('copy_id', 'Copy Channel ID')}</div>
           </div>
           {canDisable &&
-            findIntegration?.refreshNeeded &&
-            !findIntegration.customFields && (
+            (findIntegration?.reconnectTarget ||
+              (findIntegration?.refreshNeeded && !findIntegration.customFields)) && (
               <div
                 className="flex gap-[12px] items-center py-[8px] px-[10px]"
                 onClick={refreshChannel(findIntegration!)}
