@@ -10,6 +10,7 @@ export const FORMATTED_PLATFORMS = [
   'ok-community',
   'vk',
   'vk-community',
+  'vk-community-oauth',
   'threads',
   'youtube',
 ] as const;
