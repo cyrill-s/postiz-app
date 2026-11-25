@@ -1,4 +1,4 @@
-import { EncryptionService } from '@gitroom/nestjs-libraries/encryption/encryption.service';
+import { EncryptionService } from '@gitroom/nestjs-libraries/services/encryption.service';
 import 'reflect-metadata';
 import { HttpException } from '@nestjs/common';
 import { IsString } from 'class-validator';
