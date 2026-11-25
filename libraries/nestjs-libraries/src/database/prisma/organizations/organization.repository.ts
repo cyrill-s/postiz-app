@@ -4,6 +4,7 @@ import { Injectable } from '@nestjs/common';
 import { AuthService } from '@gitroom/helpers/auth/auth.service';
 import { CreateOrgUserDto } from '@gitroom/nestjs-libraries/dtos/auth/create.org.user.dto';
 import { makeId } from '@gitroom/nestjs-libraries/services/make.is';
+import { makeSecureId } from '@gitroom/nestjs-libraries/services/make.secure.id';
 
 @Injectable()
 export class OrganizationRepository {
@@ -21,7 +22,7 @@ export class OrganizationRepository {
       },
       data: {
         name: name ? `${name}###${id}` : `Unnamed User###${id}`,
-        apiKey: AuthService.fixedEncryption(makeId(20)),
+        apiKey: AuthService.fixedEncryption(makeSecureId(20)),
         isTrailing: false,
         subscription: {
           create: {
@@ -42,7 +43,7 @@ export class OrganizationRepository {
                   : `${saasName}+` + makeId(10) + '@postiz.com',
                 name: name ? `${name}###${id}` : `Unnamed User###${id}`,
                 providerName: 'LOCAL',
-                password: AuthService.hashPassword(makeId(500)),
+                password: AuthService.hashPassword(makeSecureId(500)),
                 timezone: 0,
               },
             },
@@ -240,7 +241,7 @@ export class OrganizationRepository {
         id: orgId,
       },
       data: {
-        apiKey: AuthService.fixedEncryption(makeId(20)),
+        apiKey: AuthService.fixedEncryption(makeSecureId(20)),
       },
     });
   }
@@ -419,6 +420,18 @@ export class OrganizationRepository {
       return false;
     }
 
+    const checkIfMemberExists =
+      await this._userOrg.model.userOrganization.findFirst({
+        where: {
+          userId,
+          organizationId: orgId,
+        },
+      });
+
+    if (checkIfMemberExists) {
+      return false;
+    }
+
     const checkForSubscription =
       await this._organization.model.organization.findFirst({
         where: {
@@ -466,7 +479,7 @@ export class OrganizationRepository {
     return this._organization.model.organization.create({
       data: {
         name: body.company,
-        apiKey: AuthService.fixedEncryption(makeId(20)),
+        apiKey: AuthService.fixedEncryption(makeSecureId(20)),
         allowTrial: true,
         isTrailing: true,
         users: {
@@ -525,6 +538,73 @@ export class OrganizationRepository {
         },
       });
     } catch (err) {}
+  }
+
+  async getLastPublishDate(organizationId: string) {
+    // Still publishing, or about to: a post scheduled exactly a day after the
+    // previous one must not end the streak
+    const lookahead = Date.now() + 5 * 60 * 1000;
+    const [org, recurring] = await Promise.all([
+      this._organization.model.organization.findUnique({
+        where: {
+          id: organizationId,
+        },
+        select: {
+          post: {
+            where: {
+              deletedAt: null,
+              parentPostId: null,
+              intervalInDays: null,
+              OR: [
+                { state: 'PUBLISHED' },
+                { state: 'QUEUE', publishDate: { lte: new Date(lookahead) } },
+              ],
+            },
+            orderBy: {
+              publishDate: 'desc',
+            },
+            take: 1,
+            select: {
+              publishDate: true,
+            },
+          },
+        },
+      }),
+      // Recurring posts keep their first publishDate and are republished on
+      // the interval grid, count their latest occurrence instead
+      this._organization.model.organization.findUnique({
+        where: {
+          id: organizationId,
+        },
+        select: {
+          post: {
+            where: {
+              deletedAt: null,
+              parentPostId: null,
+              intervalInDays: { not: null },
+              state: { in: ['PUBLISHED', 'QUEUE'] },
+              publishDate: { lte: new Date(lookahead) },
+            },
+            select: {
+              publishDate: true,
+              intervalInDays: true,
+            },
+          },
+        },
+      }),
+    ]);
+
+    const dates = [
+      ...(org?.post || []).map((p) => p.publishDate.getTime()),
+      ...(recurring?.post || []).map((p) => {
+        const first = p.publishDate.getTime();
+        const interval = p.intervalInDays * 24 * 60 * 60 * 1000;
+        return first + Math.floor((lookahead - first) / interval) * interval;
+      }),
+    ];
+
+    // Never in the future, the streak workflow sleeps until a day after it
+    return dates.length ? Math.min(Math.max(...dates), Date.now()) : null;
   }
 
   async getTeam(orgId: string) {

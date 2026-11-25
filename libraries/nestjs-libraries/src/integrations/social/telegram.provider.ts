@@ -5,15 +5,17 @@ import {
   PostResponse,
   SocialProvider,
 } from '@gitroom/nestjs-libraries/integrations/social/social.integrations.interface';
-import { makeId } from '@gitroom/nestjs-libraries/services/make.is';
+import { makeSecureId } from '@gitroom/nestjs-libraries/services/make.secure.id';
 import dayjs from 'dayjs';
-import { SocialAbstract } from '@gitroom/nestjs-libraries/integrations/social.abstract';
+import {
+  BadBody,
+  SocialAbstract,
+} from '@gitroom/nestjs-libraries/integrations/social.abstract';
 //@ts-ignore
 import mime from 'mime';
 import TelegramBot from 'node-telegram-bot-api';
 import { Integration } from '@prisma/client';
 import { compileSocialContent } from '@gitroom/helpers/utils/social-formatting';
-import { BadBody } from '../social.abstract';
 import { TelegramSettingsDto } from '../../dtos/posts/providers-settings/telegram.dto';
 import { TelegramUpdates } from './telegram.updates';
 import { timer } from '@gitroom/helpers/utils/timer';
@@ -57,10 +59,10 @@ export class TelegramProvider extends SocialAbstract implements SocialProvider {
   }
 
   async generateAuthUrl() {
-    const state = makeId(17);
+    const state = makeSecureId(17);
     return {
       url: state,
-      codeVerifier: makeId(10),
+      codeVerifier: makeSecureId(10),
       state,
     };
   }
@@ -168,6 +170,11 @@ export class TelegramProvider extends SocialAbstract implements SocialProvider {
       if (mediaStorage === 'local' && mediaUrl.startsWith(frontendURL)) {
         mediaUrl = mediaUrl.replace(frontendURL, '');
       }
+      // node-telegram-bot-api uploads any existing local path it is given, so
+      // everything that isn't a url has to be a file of the upload directory
+      if (mediaUrl.indexOf('http') !== 0) {
+        mediaUrl = this.localMediaPath(mediaUrl, 'telegram-error');
+      }
       //get mime type to pass contentType to telegram api.
       //some photos and videos might not pass telegram api restrictions, so they are sent as documents instead of returning errors
       const mimeType = mime.getType(mediaUrl); // Detect MIME type
@@ -193,6 +200,40 @@ export class TelegramProvider extends SocialAbstract implements SocialProvider {
   }
 
   private async sendMessage(
+    accessToken: string,
+    message: PostDetails,
+    replyToMessageId?: number
+  ): Promise<number | null> {
+    try {
+      return await this.sendMessageInternal(
+        accessToken,
+        message,
+        replyToMessageId
+      );
+    } catch (error: any) {
+      // A Telegram 400 is a permanent rejection of this request (caption too
+      // long, media Telegram could not download, ...): retrying it can never
+      // succeed, so surface it to the user instead.
+      const body = error?.response?.body;
+      if (error?.code === 'ETELEGRAM' && body?.error_code === 400) {
+        const description = (body.description || '').replace(
+          'Bad Request: ',
+          ''
+        );
+        throw new BadBody(
+          'telegram-error',
+          JSON.stringify(body),
+          Buffer.from(JSON.stringify(body)),
+          description === 'failed to get HTTP URL content'
+            ? 'Telegram could not download your media file, please check the file and try again'
+            : `Telegram rejected the post: ${description}`
+        );
+      }
+      throw error;
+    }
+  }
+
+  private async sendMessageInternal(
     accessToken: string,
     message: PostDetails,
     replyToMessageId?: number
@@ -366,7 +407,9 @@ export class TelegramProvider extends SocialAbstract implements SocialProvider {
     });
     let textMessageId: number;
     try {
-      textMessageId = (await this.sendMessage(accessToken, {
+      // Unwrapped: the original Telegram error tells a rejected text (safe to
+      // retry alone) from an unconfirmed delivery.
+      textMessageId = (await this.sendMessageInternal(accessToken, {
         ...post,
         media: [],
       }))!;

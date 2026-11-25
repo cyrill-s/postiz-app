@@ -40,6 +40,8 @@ import {
 import {
   BadBody,
   Disconnect,
+  PublishedWithError,
+  RefreshToken,
 } from '@gitroom/nestjs-libraries/integrations/social.abstract';
 
 // Drops fields the workflow and downstream activities never read — biggest wins are `error` (grows per retry) and `childrenPost` (Prisma side-loads it on every recursive row).
@@ -124,6 +126,12 @@ export class PostActivity {
   async searchForMissingThreeHoursPosts() {
     const list = await this._postService.searchForMissingThreeHoursPosts();
     for (const post of list) {
+      // the list can be long, the post may have been published since it was loaded
+      const current = await this._postService.getPostState(post.id);
+      if (current?.state !== 'QUEUE') {
+        continue;
+      }
+
       await this._temporalService.client
         .getRawClient()
         .workflow.signalWithStart('postWorkflowV112', {
@@ -220,6 +228,8 @@ export class PostActivity {
     integration: Integration,
     posts: Post[]
   ) {
+    integration = await this._integrationService.decryptTokens(integration);
+
     // kept only for in-flight postWorkflowV108 runs, which set a
     // heartbeatTimeout on this activity - removing the sender would kill
     // them. Under V109+ (no heartbeatTimeout) this is a no-op and can be
@@ -278,7 +288,8 @@ export class PostActivity {
             true,
             false,
             !/<\/?[a-z][\s\S]*>/i.test(post.content),
-            provider.mentionFormat
+            provider.mentionFormat,
+            !!provider.inlineImages?.(JSON.parse(post.settings || '{}'))
           ),
       settings: {
         ...JSON.parse(post.settings || '{}'),
@@ -337,6 +348,49 @@ export class PostActivity {
     return this.postSocialInternal(integration, posts, true);
   }
 
+  // For the providers with refreshRepeat: a token the platform rejects on the
+  // finalize call means nothing was published, so the token is refreshed and
+  // the call runs once more here, inside the activity. The workflows - frozen
+  // once on main - refresh the token as well, but then go back to
+  // checkPostStatus first, where a provider that arms and confirms its create
+  // finds its own confirmed attempt and stops with a "may have already
+  // published" warning for a post that was never created. When the token
+  // cannot be refreshed the error goes to the workflow like before.
+  private async refreshAndRepeat<T>(
+    integration: Integration,
+    func: (integration: Integration) => Promise<T>
+  ): Promise<T> {
+    const getIntegration = this._integrationManager.getSocialIntegration(
+      integration.providerIdentifier
+    );
+
+    try {
+      return await func(integration);
+    } catch (err) {
+      if (!(err instanceof RefreshToken) || !getIntegration.refreshRepeat) {
+        throw err;
+      }
+
+      setHeartbeatDetails(`${integration.providerIdentifier}: refresh token`);
+      const refresh = await this._refreshIntegrationService
+        .refresh(integration, err.message || '')
+        .catch(() => false as const);
+      if (!refresh || !refresh.accessToken) {
+        throw err;
+      }
+
+      if (getIntegration.refreshWait) {
+        await timer(10000);
+      }
+
+      return func({
+        ...integration,
+        token: refresh.accessToken,
+        refreshToken: refresh.refreshToken || integration.refreshToken,
+      });
+    }
+  }
+
   // A Disconnect error means the platform will keep rejecting this channel no
   // matter how many token refreshes (e.g. TikTok's daily active user cap):
   // mark the channel as needing a re-connect and notify the user, then rethrow
@@ -368,6 +422,28 @@ export class PostActivity {
         );
       }
 
+      // The post is live but a follow-up mutation failed: keep its platform
+      // id / URL on the post, then fail it as BadBody like any other error.
+      if (err instanceof PublishedWithError) {
+        try {
+          await this._postService.updateResolvedRelease(
+            err.postDbId,
+            integration.organizationId,
+            err.releaseId,
+            err.releaseURL
+          );
+        } catch (e) {
+          /**empty**/
+        }
+
+        throw new BadBody(
+          integration.providerIdentifier,
+          JSON.stringify({}),
+          Buffer.from('{}'),
+          err.message
+        );
+      }
+
       throw err;
     }
   }
@@ -377,6 +453,8 @@ export class PostActivity {
     posts: Post[],
     allowPending: boolean
   ) {
+    integration = await this._integrationService.decryptTokens(integration);
+
     // kept only for in-flight postWorkflowV108 runs, which set a
     // heartbeatTimeout on this activity - removing the sender would kill
     // them. Under V109+ (no heartbeatTimeout) this is a no-op and can be
@@ -447,11 +525,12 @@ export class PostActivity {
     try {
       await this._temporalService.client
         .getRawClient()
-        .workflow.start('streakWorkflow', {
+        .workflow.start('streakWorkflowV2', {
           args: [{ organizationId: integration.organizationId }],
           workflowId: `streak_${integration.organizationId}`,
           taskQueue: 'main',
-          workflowIdConflictPolicy: 'TERMINATE_EXISTING',
+          // Keep a running streak, it checks for newer posts before it ends
+          workflowIdConflictPolicy: 'USE_EXISTING',
           typedSearchAttributes: new TypedSearchAttributes([
             {
               key: organizationId,
@@ -468,6 +547,7 @@ export class PostActivity {
 
   @ActivityMethod()
   async checkPostStatus(integration: Integration, pendingData: any) {
+    integration = await this._integrationService.decryptTokens(integration);
     const getIntegration = this._integrationManager.getSocialIntegration(
       integration.providerIdentifier
     );
@@ -483,13 +563,16 @@ export class PostActivity {
 
   @ActivityMethod()
   async finalizePost(integration: Integration, pendingData: any) {
+    integration = await this._integrationService.decryptTokens(integration);
     const getIntegration = this._integrationManager.getSocialIntegration(
       integration.providerIdentifier
     );
 
     return withHeartbeat(() =>
       this.handleDisconnect(integration, () =>
-        getIntegration.finalizePost(integration.token, pendingData, integration)
+        this.refreshAndRepeat(integration, (current) =>
+          getIntegration.finalizePost(current.token, pendingData, current)
+        )
       )
     );
   }
@@ -611,6 +694,19 @@ export class PostActivity {
   async refreshToken(
     integration: Integration
   ): Promise<false | AuthTokenDetails> {
+    // The workflows call this from their catch block, an error thrown here
+    // would fail the whole run: a token that cannot be read is answered like
+    // a refresh that did not work, without flagging the channel
+    try {
+      integration = await this._integrationService.decryptTokens(integration);
+    } catch (err) {
+      console.error(
+        `Could not read the tokens of integration ${integration?.id}:`,
+        (err as Error)?.message
+      );
+      return false;
+    }
+
     const getIntegration = this._integrationManager.getSocialIntegration(
       integration.providerIdentifier
     );
@@ -629,7 +725,10 @@ export class PostActivity {
 
       return refresh;
     } catch (err) {
-      await this._refreshIntegrationService.setBetweenSteps(integration);
+      await this._refreshIntegrationService.setBetweenSteps(
+        integration,
+        (err as Error)?.message || ''
+      );
       return false;
     }
   }
@@ -639,6 +738,19 @@ export class PostActivity {
     integration: Integration,
     cause: string
   ): Promise<false | AuthTokenDetails> {
+    // The workflows call this from their catch block, an error thrown here
+    // would fail the whole run: a token that cannot be read is answered like
+    // a refresh that did not work, without flagging the channel
+    try {
+      integration = await this._integrationService.decryptTokens(integration);
+    } catch (err) {
+      console.error(
+        `Could not read the tokens of integration ${integration?.id}:`,
+        (err as Error)?.message
+      );
+      return false;
+    }
+
     const getIntegration = this._integrationManager.getSocialIntegration(
       integration.providerIdentifier
     );
@@ -658,7 +770,10 @@ export class PostActivity {
 
       return refresh;
     } catch (err) {
-      await this._refreshIntegrationService.setBetweenSteps(integration, cause);
+      await this._refreshIntegrationService.setBetweenSteps(
+        integration,
+        cause || (err as Error)?.message || ''
+      );
       return false;
     }
   }

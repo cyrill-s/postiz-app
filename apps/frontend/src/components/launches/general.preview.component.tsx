@@ -6,7 +6,7 @@ import clsx from 'clsx';
 import { VideoOrImage } from '@gitroom/react/helpers/video.or.image';
 import { FC } from 'react';
 import { textSlicer } from '@gitroom/helpers/utils/count.length';
-import SafeImage from '@gitroom/react/helpers/safe.image';
+import { PlatformIcon } from '@gitroom/frontend/components/ui/platform.icon.component';
 import { useLaunchStore } from '@gitroom/frontend/components/new-launch/store';
 import { stripHtmlValidation } from '@gitroom/helpers/utils/strip.html.validation';
 
@@ -85,12 +85,12 @@ export const GeneralPreviewComponent: FC<{
                 />
 
                 {current !== 'global' && (
-                  <SafeImage
-                    src={`/icons/platforms/${integration?.identifier}.png`}
-                    className="min-w-[20px] min-h-[20px] rounded-full absolute z-10 -bottom-[5px] -end-[5px] border border-fifth"
-                    alt={integration.identifier}
-                    width={20}
-                    height={20}
+                  <PlatformIcon
+                    identifier={integration?.identifier}
+                    size={20}
+                    className="absolute z-10 -bottom-[5px] -end-[5px]"
+                    iconClassName="min-w-[20px] min-h-[20px] rounded-full border border-fifth"
+                    markClassName="bg-newBgColorInner"
                   />
                 )}
               </div>
@@ -123,6 +123,7 @@ export const GeneralPreviewComponent: FC<{
                 </div>
               </div>
               <div
+                dir="auto"
                 className={clsx('text-wrap whitespace-pre', 'preview')}
                 dangerouslySetInnerHTML={{
                   __html: value.text,

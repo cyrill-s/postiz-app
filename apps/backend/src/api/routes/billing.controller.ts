@@ -20,6 +20,12 @@ import { AuthService } from '@gitroom/helpers/auth/auth.service';
 import { UsersService } from '@gitroom/nestjs-libraries/database/prisma/users/users.service';
 import { PaymentService } from '@gitroom/nestjs-libraries/services/payment/payment.service';
 import { BillingSyncDto } from '@gitroom/nestjs-libraries/dtos/billing/billing.sync.dto';
+import { CheckPolicies } from '@gitroom/backend/services/auth/permissions/permissions.ability';
+import {
+  AuthorizationActions,
+  Sections,
+} from '@gitroom/backend/services/auth/permissions/permission.exception.class';
+import dayjs from 'dayjs';
 
 @ApiTags('Billing')
 @Controller('/billing')
@@ -46,6 +52,7 @@ export class BillingController {
   }
 
   @Get('/check/:id')
+  @CheckPolicies([AuthorizationActions.Create, Sections.ADMIN])
   async checkId(
     @GetOrgFromRequest() org: Organization,
     @Param('id') body: string
@@ -56,31 +63,42 @@ export class BillingController {
   }
 
   @Get('/check-discount')
+  @CheckPolicies([AuthorizationActions.Create, Sections.ADMIN])
   async checkDiscount(@GetOrgFromRequest() org: Organization) {
+    const offer = await (await this.provider(org)).checkDiscount(org);
+    console.log('billing_check_discount', {
+      organization_id: org.id,
+      offer_coupon: !!offer,
+    });
     return {
-      offerCoupon: !(await (await this.provider(org)).checkDiscount(org))
-        ? false
-        : AuthService.signJWT({ discount: true }),
+      offerCoupon: !offer ? false : AuthService.signJWT({ discount: true }),
     };
   }
 
   @Post('/apply-discount')
+  @CheckPolicies([AuthorizationActions.Create, Sections.ADMIN])
   async applyDiscount(@GetOrgFromRequest() org: Organization) {
     await (await this.provider(org)).applyDiscount(org);
   }
 
   @Post('/finish-trial')
+  @CheckPolicies([AuthorizationActions.Create, Sections.ADMIN])
   async finishTrial(@GetOrgFromRequest() org: Organization) {
     const provider = await this.provider(org);
     try {
-      await provider.finishTrial(org);
-    } catch (err) {}
-    return {
-      finish: true,
-    };
+      const action = await provider.finishTrial(org);
+      if (action.requiresAction) {
+        return { finish: false, ...action };
+      }
+      return { finish: true };
+    } catch (err) {
+      console.error('finishTrial failed', err);
+      return { finish: false };
+    }
   }
 
   @Get('/is-trial-finished')
+  @CheckPolicies([AuthorizationActions.Create, Sections.ADMIN])
   async isTrialFinished(@GetOrgFromRequest() org: Organization) {
     return {
       finished: !org.isTrailing,
@@ -88,6 +106,7 @@ export class BillingController {
   }
 
   @Post('/embedded')
+  @CheckPolicies([AuthorizationActions.Create, Sections.ADMIN])
   async embedded(
     @GetOrgFromRequest() org: Organization,
     @GetUserFromRequest() user: User,
@@ -109,6 +128,7 @@ export class BillingController {
   }
 
   @Post('/subscribe')
+  @CheckPolicies([AuthorizationActions.Create, Sections.ADMIN])
   async subscribe(
     @GetOrgFromRequest() org: Organization,
     @GetUserFromRequest() user: User,
@@ -151,11 +171,24 @@ export class BillingController {
   }
 
   @Get('/portal')
+  @CheckPolicies([AuthorizationActions.Create, Sections.ADMIN])
   async modifyPayment(@GetOrgFromRequest() org: Organization) {
     const { url } = await (await this.provider(org)).portalLink(org.id);
     return {
       portal: url,
     };
+  }
+
+  @Get('/invoices')
+  @CheckPolicies([AuthorizationActions.Create, Sections.ADMIN])
+  async getInvoices(@GetOrgFromRequest() org: Organization) {
+    return (await this.provider(org)).getInvoices(org.id);
+  }
+
+  @Get('/renewal')
+  @CheckPolicies([AuthorizationActions.Create, Sections.ADMIN])
+  async getRenewal(@GetOrgFromRequest() org: Organization) {
+    return (await this.provider(org)).getRenewalDate(org.id);
   }
 
   @Get('/')
@@ -164,22 +197,39 @@ export class BillingController {
   }
 
   @Post('/cancel')
+  @CheckPolicies([AuthorizationActions.Create, Sections.ADMIN])
   async cancel(
     @GetOrgFromRequest() org: Organization,
-    @GetUserFromRequest() user: User,
-    @Body() body: { feedback: string }
+    @GetUserFromRequest() user: User
   ) {
-    await this._notificationService.sendEmail(
-      process.env.EMAIL_FROM_ADDRESS,
-      'Subscription Cancelled',
-      `Organization ${org.name} has cancelled their subscription because: ${body.feedback}`,
-      user.email
-    );
+    console.log('billing_cancel_requested', { organization_id: org.id });
+    const result = await (await this.provider(org)).setToCancel(org.id);
+    console.log('billing_cancel_done', {
+      organization_id: org.id,
+      cancel_at: result.cancel_at,
+    });
 
-    return (await this.provider(org)).setToCancel(org.id);
+    if (result.cancel_at && dayjs(result.cancel_at).isAfter(dayjs())) {
+      try {
+        await this._notificationService.sendEmail(
+          user.email,
+          'Your Postiz subscription is set to cancel',
+          `Your subscription is pending cancellation and will end on ${dayjs(
+            result.cancel_at
+          ).format(
+            'D MMM, YYYY'
+          )} (UTC), the end of your current billing cycle. Until then you can keep using Postiz as usual. Changed your mind? You can reactivate at any time from the <a href="${
+            process.env.FRONTEND_URL
+          }/billing">Billing page</a>.`
+        );
+      } catch (err) {}
+    }
+
+    return result;
   }
 
   @Post('/prorate')
+  @CheckPolicies([AuthorizationActions.Create, Sections.ADMIN])
   async prorate(
     @GetOrgFromRequest() org: Organization,
     @Body() body: BillingSubscribeDto
@@ -262,11 +312,13 @@ export class BillingController {
   }
 
   @Get('/chatbase-refund/preview')
+  @CheckPolicies([AuthorizationActions.Create, Sections.ADMIN])
   async chatbaseRefundPreview(@GetOrgFromRequest() org: Organization) {
     return (await this.provider(org)).chatbaseRefundPreview(org.id);
   }
 
   @Post('/chatbase-refund')
+  @CheckPolicies([AuthorizationActions.Create, Sections.ADMIN])
   async chatbaseRefund(
     @GetUserFromRequest() user: User,
     @GetOrgFromRequest() org: Organization

@@ -6,12 +6,15 @@ import {
 } from '@gitroom/helpers/utils/social-formatting';
 import {
   BadRequestException,
+  ConflictException,
+  HttpException,
   Injectable,
   NotFoundException,
   ValidationPipe,
 } from '@nestjs/common';
 import { PostsRepository } from '@gitroom/nestjs-libraries/database/prisma/posts/posts.repository';
 import { CreatePostDto } from '@gitroom/nestjs-libraries/dtos/posts/create.post.dto';
+import { UpdatePostGroupDto } from '@gitroom/nestjs-libraries/dtos/posts/update.post.group.dto';
 import dayjs from 'dayjs';
 import { IntegrationManager } from '@gitroom/nestjs-libraries/integrations/integration.manager';
 import {
@@ -24,7 +27,8 @@ import {
 } from '@prisma/client';
 import { GetPostsDto } from '@gitroom/nestjs-libraries/dtos/posts/get.posts.dto';
 import { GetPostsListDto } from '@gitroom/nestjs-libraries/dtos/posts/get.posts.list.dto';
-import { shuffle } from 'lodash';
+import { groupBy, shuffle, uniqBy } from 'lodash';
+import { v4 as uuidv4 } from 'uuid';
 import { CreateGeneratedPostsDto } from '@gitroom/nestjs-libraries/dtos/generator/create.generated.posts.dto';
 import { IntegrationService } from '@gitroom/nestjs-libraries/database/prisma/integrations/integration.service';
 import { makeId } from '@gitroom/nestjs-libraries/services/make.is';
@@ -36,10 +40,11 @@ import {
   minifyPostsList,
   minifyPosts,
 } from '@gitroom/helpers/utils/posts.list.minify';
-import axios from 'axios';
+import { getSsrfSafeAxios } from '@gitroom/nestjs-libraries/dtos/webhooks/ssrf.safe.dispatcher';
 import sharp from 'sharp';
 import { UploadFactory } from '@gitroom/nestjs-libraries/upload/upload.factory';
 import { Readable } from 'stream';
+import { resolve, sep } from 'path';
 import { OpenaiService } from '@gitroom/nestjs-libraries/openai/openai.service';
 dayjs.extend(utc);
 import * as Sentry from '@sentry/nestjs';
@@ -59,6 +64,8 @@ import { stripLinks } from '@gitroom/helpers/utils/strip.links';
 import { validate } from 'class-validator';
 import { plainToInstance } from 'class-transformer';
 import { stripHtmlValidation } from '@gitroom/helpers/utils/strip.html.validation';
+import { postContentPlainText } from '@gitroom/helpers/utils/sanitize.post.content';
+import { CreatePublicCommentDto } from '@gitroom/nestjs-libraries/dtos/comments/add.comment.dto';
 import { countLength } from '@gitroom/helpers/utils/count.length';
 
 type PostWithConditionals = Post & {
@@ -84,8 +91,26 @@ export class PostsService {
     return this._postRepository.searchForMissingThreeHoursPosts();
   }
 
+  getPostState(id: string) {
+    return this._postRepository.getPostState(id);
+  }
+
   updatePost(id: string, postId: string, releaseURL: string) {
     return this._postRepository.updatePost(id, postId, releaseURL);
+  }
+
+  updateResolvedRelease(
+    id: string,
+    orgId: string,
+    releaseId: string,
+    releaseURL: string
+  ) {
+    return this._postRepository.updateResolvedRelease(
+      id,
+      orgId,
+      releaseId,
+      releaseURL
+    );
   }
 
   async getMissingContent(
@@ -157,7 +182,143 @@ export class PostsService {
   }
 
   async updateReleaseId(orgId: string, postId: string, releaseId: string) {
-    return this._postRepository.updateReleaseId(postId, orgId, releaseId);
+    const post = await this._postRepository.getPostById(postId, orgId);
+
+    // the URL is a bonus: connecting must not fail when it cannot be fetched
+    let releaseURL: string | undefined;
+    if (post?.releaseId === 'missing') {
+      try {
+        releaseURL = await this._integrationManager
+          .getSocialIntegration(post.integration.providerIdentifier)
+          .releaseUrl?.(
+            post.integration.token,
+            String(releaseId),
+            post.integration
+          );
+      } catch (e) {
+        console.log(e);
+      }
+    }
+
+    return this._postRepository.updateReleaseId(
+      postId,
+      orgId,
+      releaseId,
+      releaseURL
+    );
+  }
+
+  async resolveRelease(
+    orgId: string,
+    post: {
+      id: string;
+      releaseId: string;
+      releaseURL: string;
+      settings: string;
+      integration: Integration;
+    }
+  ) {
+    const integrationProvider = this._integrationManager.getSocialIntegration(
+      post.integration.providerIdentifier
+    );
+
+    const resolved = await integrationProvider.resolveReleaseId?.(
+      post.integration.token,
+      post.releaseId,
+      post.integration,
+      JSON.parse(post.settings || '{}'),
+      post.releaseURL
+    );
+    if (
+      !resolved ||
+      !('postId' in resolved) ||
+      resolved.postId === post.releaseId
+    ) {
+      return {
+        releaseId: post.releaseId,
+        releaseURL: post.releaseURL,
+        pending: !!resolved && 'pending' in resolved,
+        unavailable: !!resolved && 'unavailable' in resolved,
+      };
+    }
+
+    await this._postRepository.updateResolvedRelease(
+      post.id,
+      orgId,
+      resolved.postId,
+      resolved.releaseURL
+    );
+    return {
+      releaseId: resolved.postId,
+      releaseURL: resolved.releaseURL,
+      pending: false,
+      unavailable: false,
+    };
+  }
+
+  async getReleaseURL(
+    orgId: string,
+    postId: string,
+    forceRefresh = false
+  ): Promise<{
+    releaseURL: string;
+    pending?: boolean;
+    unavailable?: boolean;
+    reconnect?: boolean;
+  }> {
+    const post = await this._postRepository.getPostById(postId, orgId);
+    if (!post || !post.releaseURL) {
+      return { releaseURL: '' };
+    }
+
+    const integrationProvider = this._integrationManager.getSocialIntegration(
+      post.integration.providerIdentifier
+    );
+
+    if (!integrationProvider.resolveReleaseId) {
+      return { releaseURL: post.releaseURL };
+    }
+
+    const getIntegration = post.integration!;
+
+    // only refreshed once the platform rejects the token, so a post that is
+    // already resolved never reaches the platform
+    if (forceRefresh) {
+      const data = await this._refreshIntegrationService.refresh(
+        getIntegration
+      );
+      if (!data) {
+        return { releaseURL: post.releaseURL, reconnect: true };
+      }
+
+      const { accessToken } = data;
+
+      if (accessToken) {
+        getIntegration.token = accessToken;
+
+        if (integrationProvider.refreshWait) {
+          await timer(10000);
+        }
+      } else {
+        await this._integrationService.disconnectChannel(orgId, getIntegration);
+        return { releaseURL: post.releaseURL, reconnect: true };
+      }
+    }
+
+    try {
+      const { releaseURL, pending, unavailable } = await this.resolveRelease(
+        orgId,
+        post
+      );
+      return { releaseURL, pending, unavailable };
+    } catch (e) {
+      console.log(e);
+      if (e instanceof RefreshToken && !forceRefresh) {
+        return this.getReleaseURL(orgId, postId, true);
+      }
+    }
+
+    return { releaseURL: post.releaseURL, pending: true };
   }
 
   async checkPostAnalytics(
@@ -218,10 +379,12 @@ export class PostsService {
     // }
 
     try {
+      const { releaseId } = await this.resolveRelease(orgId, post);
+
       const loadAnalytics = await integrationProvider.postAnalytics(
         getIntegration.internalId,
         getIntegration.token,
-        post.releaseId,
+        releaseId,
         date
       );
       await ioRedis.set(
@@ -234,10 +397,11 @@ export class PostsService {
       );
       return loadAnalytics;
     } catch (e) {
-      console.log(e);
-      if (e instanceof RefreshToken) {
+      // Retry once with a refreshed token
+      if (e instanceof RefreshToken && !forceRefresh) {
         return this.checkPostAnalytics(orgId, postId, date, true);
       }
+      console.log(e);
     }
 
     return [];
@@ -380,6 +544,7 @@ export class PostsService {
             })
           )
         )
+          .filter((m) => this.isAllowedMediaPath(m?.path))
           .map((m) => {
             return {
               ...m,
@@ -404,7 +569,9 @@ export class PostsService {
 
             if (hasExtension(m.path, 'png')) {
               imageUpdateNeeded = true;
-              const response = await axios.get(m.url, {
+              // the media url is user-influenced, so it goes through the same
+              // SSRF-safe client as the providers' media reads
+              const response = await getSsrfSafeAxios().get(m.url, {
                 responseType: 'arraybuffer',
               });
 
@@ -459,8 +626,28 @@ export class PostsService {
 
       return getImageList;
     } catch (err: any) {
-      return imagesList;
+      return (imagesList || []).filter((m) =>
+        this.isAllowedMediaPath(m?.path)
+      );
     }
+  }
+
+  // a media path that isn't a remote url is read straight from the worker's
+  // disk, so it has to resolve inside UPLOAD_DIRECTORY
+  private isAllowedMediaPath(path: unknown) {
+    if (typeof path !== 'string' || /^https?:\/\//.test(path)) {
+      return true;
+    }
+
+    // containing "http" anywhere skips the UPLOAD_DIRECTORY prefix, and the
+    // providers would then read it relative to the working directory
+    if (path.indexOf('http') > -1) {
+      return false;
+    }
+
+    const base = resolve(String(process.env.UPLOAD_DIRECTORY));
+    const filePath = resolve(process.env.UPLOAD_DIRECTORY + path);
+    return filePath.startsWith(base + sep);
   }
 
   async getPostGroupDebugExport(orgId: string, group: string) {
@@ -511,15 +698,63 @@ export class PostsService {
   }
 
   async getPostsByGroup(orgId: string, group: string) {
-    const convertToJPEG = false;
     const loadAll = await this._postRepository.getPostsByGroup(orgId, group);
     const posts = this.arrangePostsByGroup(loadAll, undefined);
+    if (!posts.length) {
+      throw new NotFoundException('Post not found');
+    }
 
+    const batch = posts[0].batchId
+      ? await this._postRepository.getPostsByBatch(
+          orgId,
+          posts[0].batchId,
+          group
+        )
+      : [];
+
+    // the other channels the post was created with, the editor holds one
+    // post per channel, and a channel that repeats differently is its own post
+    const siblings = uniqBy(
+      Object.values(groupBy(batch, (post) => post.group))
+        .map((batchPosts) => this.arrangePostsByGroup(batchPosts, undefined))
+        .filter(
+          (batchPosts) =>
+            batchPosts.length &&
+            batchPosts[0].integrationId !== posts[0].integrationId &&
+            batchPosts[0].intervalInDays === posts[0].intervalInDays
+        ),
+      (batchPosts) => batchPosts[0].integrationId
+    );
+
+    return {
+      ...(await this.groupForEditor(posts)),
+      siblings: await Promise.all(
+        siblings.map((batchPosts) => this.groupForEditor(batchPosts))
+      ),
+    };
+  }
+
+  // the post as the editor loads it, its channel without the tokens
+  private async groupForEditor(
+    posts: PostWithConditionals[],
+    convertToJPEG = false
+  ) {
     return {
       group: posts?.[0]?.group,
       posts: await Promise.all(
-        (posts || []).map(async (post) => ({
+        (posts || []).map(async ({ integration, ...post }) => ({
           ...post,
+          ...(integration
+            ? {
+                integration: {
+                  id: integration.id,
+                  name: integration.name,
+                  picture: integration.picture,
+                  providerIdentifier: integration.providerIdentifier,
+                  profile: integration.profile,
+                },
+              }
+            : {}),
           image: await this.updateMedia(
             post.id,
             JSON.parse(post.image || '[]'),
@@ -531,6 +766,201 @@ export class PostsService {
       integration: posts[0].integrationId,
       settings: JSON.parse(posts[0].settings || '{}'),
     };
+  }
+
+  private publicPostGroupResponse(group: string, all: Post[]) {
+    const roots = all
+      .filter((post) => !post.parentPostId && !post.deletedAt)
+      .sort((a, b) => a.id.localeCompare(b.id));
+    if (!roots.length) {
+      throw new NotFoundException('Post group not found');
+    }
+    return {
+      group,
+      publishDate: dayjs.utc(roots[0].publishDate).toISOString(),
+      state: roots[0].state,
+      posts: roots.map((post) => {
+        let images = [];
+        try {
+          images = JSON.parse(post.image || '[]');
+        } catch (err) {}
+        return {
+          id: post.id,
+          integrationId: post.integrationId,
+          content: post.content,
+          imageCount: Array.isArray(images) ? images.length : 0,
+          state: post.state,
+          publishDate: dayjs.utc(post.publishDate).toISOString(),
+        };
+      }),
+    };
+  }
+
+  async getPublicPostGroup(orgId: string, group: string) {
+    return this.publicPostGroupResponse(
+      group,
+      await this._postRepository.getPostsByGroup(orgId, group)
+    );
+  }
+
+  async cancelPublicPostGroup(orgId: string, group: string) {
+    const roots = await this._postRepository.cancelPostGroup(orgId, group);
+    // Like PUT removal, terminate every root's workflows after committing,
+    // using DRAFT to prevent startWorkflow from scheduling a replacement.
+    for (const root of roots) {
+      await this.startWorkflow(
+        root.integration.providerIdentifier.split('-')[0].toLowerCase(),
+        root.id,
+        orgId,
+        'DRAFT'
+      );
+    }
+    return { group, cancelled: roots.map((post) => post.id) };
+  }
+
+  async updatePublicPostGroup(orgId: string, group: string, rawBody: any) {
+    const all = await this._postRepository.getPostsByGroup(orgId, group);
+    // Check org ownership before accepting any supplied post ids.
+    this.publicPostGroupResponse(group, all);
+    const roots = all.filter((post) => !post.parentPostId);
+    const fail = (msg: string): never => {
+      throw new HttpException({ msg }, 400);
+    };
+    const body: UpdatePostGroupDto = await new ValidationPipe({
+      transform: true,
+      whitelist: true,
+      forbidNonWhitelisted: true,
+      exceptionFactory: (errors) =>
+        new HttpException({ msg: this.firstValidationError(errors) }, 400),
+    }).transform(rawBody, { type: 'body', metatype: UpdatePostGroupDto });
+
+    const edits = body.posts || [];
+    const removed = body.removePostIds || [];
+    if (!body.date && !edits.length && !removed.length) {
+      fail('Provide date, posts or removePostIds');
+    }
+    if (body.date && new Date(body.date).getTime() <= Date.now()) {
+      fail('date must be in the future');
+    }
+    for (const id of [...edits.map((post) => post.id), ...removed]) {
+      if (!roots.some((post) => post.id === id)) {
+        fail(`Unknown post id for this group: ${id}`);
+      }
+    }
+    if (edits.some((post) => removed.includes(post.id))) {
+      fail('A post cannot be edited and removed in the same request');
+    }
+    if (removed.length === roots.length) {
+      fail('Cannot remove all posts; use DELETE for this group');
+    }
+
+    const affected = roots.filter(
+      (post) =>
+        body.date ||
+        removed.includes(post.id) ||
+        edits.some((edit) => edit.id === post.id)
+    );
+    if (
+      affected.some(
+        (post) =>
+          (post.state !== 'QUEUE' && post.state !== 'DRAFT') ||
+          post.publishDate.getTime() < Date.now() + 5 * 60 * 1000
+      )
+    ) {
+      throw new ConflictException({ error: 'publishing' });
+    }
+
+    // Rebuild the complete validation value just like updatePostSettings:
+    // existing media/settings and ordered comments, changing only root content.
+    // Validate every surviving affected root before the transaction starts.
+    for (const root of affected.filter((post) => !removed.includes(post.id))) {
+      const ordered = [root, ...this.arrangePostsByGroup(all, root.id)];
+      const edit = edits.find((post) => post.id === root.id);
+      const value = ordered.map((post) => {
+        let image = [];
+        try {
+          image = JSON.parse(post.image || '[]');
+        } catch (err) {}
+        return {
+          id: post.id,
+          content: post.id === root.id && edit ? edit.content : post.content,
+          delay: post.delay || 0,
+          image,
+        };
+      });
+      let settings = {};
+      try {
+        settings = JSON.parse(root.settings || '{}');
+      } catch (err) {}
+      let validation: Awaited<ReturnType<PostsService['validatePosts']>>[number];
+      try {
+        [validation] = await this.validatePosts(orgId, [
+          {
+            integration: { id: root.integrationId },
+            settings: {
+              ...settings,
+              __type: root.integration.providerIdentifier,
+            },
+            value,
+          },
+        ]);
+      } catch (err) {
+        if (err instanceof BadRequestException) {
+          fail(err.message);
+        }
+        throw err;
+      }
+      if (validation.emptyContent) {
+        fail(
+          `${validation.name}: Your post should have at least one character or one image.`
+        );
+      }
+      if (root.state !== 'DRAFT') {
+        if (!validation.valid) {
+          fail(
+            `${validation.name}: ${validation.settingsError || 'Please fix your settings'}`
+          );
+        }
+        if (validation.errors !== true) {
+          fail(`${validation.name}: ${validation.errors}`);
+        }
+        if (validation.tooLong) {
+          fail(
+            `${validation.name}: The maximum characters is ${validation.maximumCharacters}`
+          );
+        }
+      }
+    }
+
+    const idsWithChildren = (posts: typeof roots) =>
+      posts.flatMap((post) =>
+        [post, ...this.arrangePostsByGroup(all, post.id)].map((item) => item.id)
+      );
+    await this._postRepository.updatePostGroup(orgId, group, {
+      roots: affected.map((post) => ({ id: post.id, updatedAt: post.updatedAt })),
+      posts: edits,
+      date: body.date,
+      datePostIds: body.date
+        ? idsWithChildren(roots.filter((post) => !removed.includes(post.id)))
+        : [],
+      removePostIds: idsWithChildren(roots.filter((post) => removed.includes(post.id))),
+    });
+
+    await this.detachStaleAnchors(edits);
+
+    // Use the same terminate/restart path as changeDate(..., 'schedule').
+    // DRAFT terminates stale workflows without starting a publish; removals do too.
+    for (const root of affected) {
+      if (body.date || removed.includes(root.id)) {
+        await this.startWorkflow(
+          root.integration.providerIdentifier.split('-')[0].toLowerCase(),
+          root.id,
+          orgId,
+          removed.includes(root.id) ? 'DRAFT' : root.state
+        );
+      }
+    }
+    return this.getPublicPostGroup(orgId, group);
   }
 
   arrangePostsByGroup(all: any, parent?: string): PostWithConditionals[] {
@@ -553,24 +983,11 @@ export class PostsService {
 
   async getPost(orgId: string, id: string, convertToJPEG = false) {
     const posts = await this.getPostsRecursively(id, true, orgId, true);
-    const list = {
-      group: posts?.[0]?.group,
-      posts: await Promise.all(
-        (posts || []).map(async (post) => ({
-          ...post,
-          image: await this.updateMedia(
-            post.id,
-            JSON.parse(post.image || '[]'),
-            convertToJPEG
-          ),
-        }))
-      ),
-      integrationPicture: posts[0]?.integration?.picture,
-      integration: posts[0].integrationId,
-      settings: JSON.parse(posts[0].settings || '{}'),
-    };
+    if (!posts?.[0]) {
+      throw new NotFoundException('Post not found');
+    }
 
-    return list;
+    return this.groupForEditor(posts, convertToJPEG);
   }
 
   async getOldPosts(orgId: string, date: string) {
@@ -590,15 +1007,24 @@ export class PostsService {
       e.replace('(post:', '').replace(')', '')
     );
     const urls = await this._postRepository.getPostUrls(orgId, ids);
-    const newPlainText = ids.reduce((acc, value) => {
-      const findUrl = urls?.find?.((u) => u.id === value)?.releaseURL || '';
-      return acc.replace(
-        new RegExp(`\\(post:${value}\\)`, 'g'),
-        findUrl.split(',')[0]
-      );
-    }, plainText);
+    const replaceTags = (text: string, escape = (url: string) => url) =>
+      ids.reduce((acc, value) => {
+        const findUrl = urls?.find?.((u) => u.id === value)?.releaseURL || '';
+        return acc.replace(new RegExp(`\\(post:${value}\\)`, 'g'), () =>
+          escape(findUrl.split(',')[0])
+        );
+      }, text);
 
-    return this.updateTags(orgId, JSON.parse(newPlainText) as Post[]);
+    // the release url is whatever the platform answered, so it only goes where
+    // a tag is written, the content and the settings (escaped for their json),
+    // and never into the media list, which was validated before this runs
+    return post.map((p) => ({
+      ...p,
+      content: p.content && replaceTags(p.content),
+      settings:
+        p.settings &&
+        replaceTags(p.settings, (url) => JSON.stringify(url).slice(1, -1)),
+    }));
   }
 
   public async checkInternalPlug(
@@ -701,6 +1127,8 @@ export class PostsService {
           } catch (err) {}
         }
       } catch (err) {}
+
+      return { id: post.id };
     }
 
     return { error: true };
@@ -990,7 +1418,22 @@ export class PostsService {
     keepGroup = false
   ): Promise<any[]> {
     const postList = [];
+    const batchId = uuidv4();
     for (const post of body.posts) {
+      // the posts to update can't belong to another organization, an id that
+      // doesn't exist yet is a new post (the editor makes one for every post)
+      const postIds = [
+        ...new Set((post.value || []).map((p) => p.id).filter(Boolean)),
+      ];
+      if (
+        postIds.length &&
+        (await this._postRepository.countPostsOfOtherOrganizations(
+          orgId,
+          postIds
+        ))
+      ) {
+        throw new NotFoundException('Post not found');
+      }
       if (
         (body.type === 'schedule' || body.type === 'now') &&
         !body.republish &&
@@ -1024,17 +1467,25 @@ export class PostsService {
       const { posts } = await this._postRepository.createOrUpdatePost(
         body.type,
         orgId,
-        body.type === 'now' ? dayjs().format('YYYY-MM-DDTHH:mm:00') : body.date,
+        body.type === 'now'
+          ? dayjs().format('YYYY-MM-DDTHH:mm:00')
+          : post.date || body.date,
         post,
         body.tags,
         creationMethod,
         body.inter,
-        keepGroup
+        keepGroup,
+        batchId
       );
 
       if (!posts?.length) {
         return [] as any[];
       }
+
+      const existingIds = (post.value || []).map((p) => p.id).filter(Boolean);
+      await this.detachStaleAnchors(
+        posts.filter((p) => existingIds.includes(p.id))
+      );
 
       if (body.type !== 'update') {
         this.startWorkflow(
@@ -1435,8 +1886,9 @@ export class PostsService {
     );
     return this.findFreeDateTimeRecursive(
       orgId,
-      findTimes,
-      dayjs.utc().startOf('day')
+      findTimes.length ? findTimes : [120, 400, 700],
+      dayjs.utc().startOf('day'),
+      0
     );
   }
 
@@ -1452,8 +1904,17 @@ export class PostsService {
   private async findFreeDateTimeRecursive(
     orgId: string,
     times: number[],
-    date: dayjs.Dayjs
+    date: dayjs.Dayjs,
+    daysChecked: number
   ): Promise<string> {
+    // stop searching after a year so an empty times list can never recurse forever
+    if (daysChecked > 365) {
+      return date
+        .clone()
+        .add(times[0] || 0, 'minutes')
+        .format('YYYY-MM-DDTHH:mm:00');
+    }
+
     const list = await this._postRepository.getPostsCountsByDates(
       orgId,
       times,
@@ -1461,7 +1922,12 @@ export class PostsService {
     );
 
     if (!list.length) {
-      return this.findFreeDateTimeRecursive(orgId, times, date.add(1, 'day'));
+      return this.findFreeDateTimeRecursive(
+        orgId,
+        times,
+        date.add(1, 'day'),
+        daysChecked + 1
+      );
     }
 
     const num = list.reduce<null | number>((prev, curr) => {
@@ -1474,8 +1940,170 @@ export class PostsService {
     return date.clone().add(num, 'minutes').format('YYYY-MM-DDTHH:mm:00');
   }
 
-  getComments(postId: string) {
-    return this._postRepository.getComments(postId);
+  async getComments(previewId: string) {
+    const posts = await this.getPostsRecursively(previewId, false);
+    const comments = await this._postRepository.getCommentsForPosts(
+      posts.map((p) => p.id)
+    );
+
+    return comments.map((comment) => ({
+      id: comment.id,
+      postId: comment.postId,
+      parentId: comment.parentId,
+      content: comment.content,
+      anchorStart: comment.anchorStart,
+      anchorEnd: comment.anchorEnd,
+      anchorQuote: comment.anchorQuote,
+      resolvedAt: comment.resolvedAt,
+      createdAt: comment.createdAt,
+      name: comment.userId
+        ? [comment.user?.name, comment.user?.lastName]
+            .filter(Boolean)
+            .join(' ')
+            .trim() || null
+        : comment.displayName,
+    }));
+  }
+
+  async createPublicComment(
+    previewId: string,
+    body: CreatePublicCommentDto,
+    userId: string | null,
+    ip: string
+  ) {
+    const posts = await this.getPostsRecursively(previewId, false);
+    if (!posts.length) {
+      throw new NotFoundException('Post not found');
+    }
+
+    let post = body.postId ? posts.find((p) => p.id === body.postId) : posts[0];
+    if (!post) {
+      throw new BadRequestException('Post does not belong to this preview');
+    }
+
+    if (!userId) {
+      if (!body.displayName?.trim()) {
+        throw new BadRequestException('Name is required');
+      }
+      await this.verifyRecaptcha(body.recaptchaToken, ip);
+    }
+
+    const hasStart = typeof body.anchorStart === 'number';
+    const hasEnd = typeof body.anchorEnd === 'number';
+    if (hasStart !== hasEnd) {
+      throw new BadRequestException('Both anchor offsets are required');
+    }
+
+    if (body.parentId) {
+      const parent = await this._postRepository.getCommentById(body.parentId);
+      if (!parent || !posts.some((p) => p.id === parent.postId)) {
+        throw new BadRequestException('Parent comment not found');
+      }
+      if (parent.parentId) {
+        throw new BadRequestException(
+          'Replies can only be added to a root comment'
+        );
+      }
+      if (hasStart || body.anchorQuote) {
+        throw new BadRequestException('Replies cannot be anchored');
+      }
+      post = posts.find((p) => p.id === parent.postId)!;
+    }
+
+    if (hasStart) {
+      const plainText = postContentPlainText(post.content);
+      if (
+        body.anchorStart! < 0 ||
+        body.anchorStart! >= body.anchorEnd! ||
+        body.anchorEnd! > plainText.length
+      ) {
+        throw new BadRequestException('Anchor is out of range');
+      }
+      if (
+        body.anchorQuote !== plainText.slice(body.anchorStart!, body.anchorEnd!)
+      ) {
+        throw new BadRequestException('Anchor does not match the post text');
+      }
+    }
+
+    return this._postRepository.createComment(
+      post.organizationId,
+      userId,
+      post.id,
+      body.content,
+      {
+        displayName: userId ? undefined : body.displayName!.trim(),
+        parentId: body.parentId,
+        anchorStart: hasStart ? body.anchorStart : undefined,
+        anchorEnd: hasStart ? body.anchorEnd : undefined,
+        anchorQuote: hasStart ? body.anchorQuote : undefined,
+      }
+    );
+  }
+
+  private async verifyRecaptcha(token: string | undefined, ip: string) {
+    if (!process.env.RECAPTCHA_SECRET_KEY) {
+      return;
+    }
+
+    if (!token) {
+      throw new BadRequestException('Captcha verification failed');
+    }
+
+    const result = await (
+      await fetch('https://www.google.com/recaptcha/api/siteverify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          secret: process.env.RECAPTCHA_SECRET_KEY,
+          response: token,
+          remoteip: ip,
+        }),
+      })
+    ).json();
+
+    if (!result?.success) {
+      throw new BadRequestException('Captcha verification failed');
+    }
+  }
+
+  async resolveComment(orgId: string, commentId: string, resolved: boolean) {
+    const comment = await this._postRepository.getCommentById(commentId);
+    if (!comment || comment.post.organizationId !== orgId) {
+      throw new NotFoundException('Comment not found');
+    }
+    if (comment.parentId) {
+      throw new BadRequestException('Only root comments can be resolved');
+    }
+
+    return this._postRepository.setCommentResolved(
+      commentId,
+      resolved ? new Date() : null
+    );
+  }
+
+  // A comment anchored to a span of text keeps its quote but loses the
+  // highlight once the span no longer reads the same on the new content.
+  async detachStaleAnchors(posts: { id: string; content: string }[]) {
+    for (const post of posts) {
+      const anchored = await this._postRepository.getAnchoredCommentsForPost(
+        post.id
+      );
+      if (!anchored.length) {
+        continue;
+      }
+
+      const plainText = postContentPlainText(post.content);
+      const stale = anchored
+        .filter(
+          (c) => c.anchorQuote !== plainText.slice(c.anchorStart!, c.anchorEnd!)
+        )
+        .map((c) => c.id);
+
+      if (stale.length) {
+        await this._postRepository.detachAnchorsForPost(post.id, stale);
+      }
+    }
   }
 
   getTags(orgId: string) {
@@ -1492,14 +2120,5 @@ export class PostsService {
 
   deleteTag(id: string, orgId: string) {
     return this._postRepository.deleteTag(id, orgId);
-  }
-
-  createComment(
-    orgId: string,
-    userId: string,
-    postId: string,
-    comment: string
-  ) {
-    return this._postRepository.createComment(orgId, userId, postId, comment);
   }
 }

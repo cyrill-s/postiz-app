@@ -1,5 +1,8 @@
 import { FormattedPreview } from '@gitroom/frontend/components/launches/formatted-preview.component';
 import { FC } from 'react';
+import { useWatch } from 'react-hook-form';
+import { capitalize } from 'lodash';
+import { useSettings } from '@gitroom/frontend/components/launches/helpers/use.values';
 import { useIntegration } from '@gitroom/frontend/components/launches/helpers/use.integration';
 import { useLaunchStore } from '@gitroom/frontend/components/new-launch/store';
 import { useMediaDirectory } from '@gitroom/react/helpers/use.media.directory';
@@ -13,6 +16,11 @@ export const YoutubePreview: FC<{
   const { value: topValue, integration } = useIntegration();
   const current = useLaunchStore((state) => state.current);
   const mediaDir = useMediaDirectory();
+  const { control } = useSettings();
+  const [title, privacyStatus] = useWatch({
+    control,
+    name: ['title', 'type'],
+  });
 
   const renderContent = topValue.map((p) => ({
     images: p.image,
@@ -33,6 +41,11 @@ export const YoutubePreview: FC<{
           />
         )}
       </div>
+      {!!title && (
+        <div dir="auto" className="text-[16px] font-[600] break-words">
+          {title}
+        </div>
+      )}
       <div className="flex items-center">
         <div className="flex flex-1 gap-[17px] items-center">
           <div>
@@ -112,7 +125,10 @@ export const YoutubePreview: FC<{
           </div>
         </div>
       </div>
-      <div className="bg-youtubeBgAction rounded-[12px] text-[12px] font-[400] overflow-y-auto">
+      <div className="bg-youtubeBgAction rounded-[12px] p-[12px] text-[12px] font-[400] overflow-y-auto flex flex-col gap-[8px]">
+        {!!privacyStatus && (
+          <div className="font-[600]">{capitalize(privacyStatus)}</div>
+        )}
         <FormattedPreview platform="youtube" showMedia={false} />
       </div>
     </div>

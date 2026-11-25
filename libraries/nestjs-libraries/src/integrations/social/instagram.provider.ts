@@ -6,11 +6,12 @@ import {
   PostResponse,
   SocialProvider,
 } from '@gitroom/nestjs-libraries/integrations/social/social.integrations.interface';
-import { makeId } from '@gitroom/nestjs-libraries/services/make.is';
+import { makeSecureId } from '@gitroom/nestjs-libraries/services/make.secure.id';
 import { timer } from '@gitroom/helpers/utils/timer';
 import dayjs from 'dayjs';
 import {
   BadBody,
+  Disconnect,
   SocialAbstract,
   ValidityMedia,
 } from '@gitroom/nestjs-libraries/integrations/social.abstract';
@@ -19,6 +20,7 @@ import { Integration } from '@prisma/client';
 import { Rules } from '@gitroom/nestjs-libraries/chat/rules.description.decorator';
 import { META_GRAPH_API_VERSION } from '@gitroom/nestjs-libraries/integrations/social/facebook.provider';
 import { Tool } from '@gitroom/nestjs-libraries/integrations/tool.decorator';
+import { DashboardFunction } from '@gitroom/nestjs-libraries/integrations/dashboard.function.decorator';
 import { hasExtension } from '@gitroom/helpers/utils/has.extension';
 
 @Rules(
@@ -55,8 +57,8 @@ export class InstagramProvider
     if (!firstPost?.length) {
       return 'Should have at least one media';
     }
-    if (firstPost.length > 10) {
-      return 'Instagram carousel only supports up to 10 media attachments';
+    if (firstPost.length > 20) {
+      return 'Instagram carousel only supports up to 20 media attachments';
     }
     if (this.assetBoolean(settings?.is_trial_reel)) {
       if ((firstPost?.length ?? 0) > 1) {
@@ -68,6 +70,9 @@ export class InstagramProvider
       if (!hasVideo) {
         return 'Trial Reels must be a video';
       }
+    }
+    if (firstPost?.some((f) => (f?.alt?.length ?? 0) > 1000)) {
+      return 'Instagram alt text can be up to 1000 characters';
     }
     if (settings?.audio?.id) {
       if (settings?.post_type === 'story') {
@@ -103,7 +108,7 @@ export class InstagramProvider
     status: number
   ):
     | {
-        type: 'refresh-token' | 'bad-body' | 'retry';
+        type: 'refresh-token' | 'bad-body' | 'retry' | 'disconnect';
         value: string;
       }
     | undefined {
@@ -117,6 +122,13 @@ export class InstagramProvider
       return {
         type: 'bad-body' as const,
         value: "This account doesn't support Trial Reels",
+      };
+    }
+    if (body.indexOf('2207078') > -1) {
+      return {
+        type: 'bad-body' as const,
+        value:
+          'Instagram Trial Reel publish limit reached for this account, please try again later or publish the post as a regular Reel',
       };
     }
 
@@ -181,13 +193,14 @@ export class InstagramProvider
     if (body.indexOf('2207053') > -1) {
       return {
         type: 'bad-body' as const,
-        value: 'Unknown upload error, please try again',
+        value:
+          "Instagram failed to upload the video. If it exceeds Instagram's limits (300MB, 1920px width, 25Mbps bitrate), export a smaller version and try again",
       };
     }
 
     if (body.indexOf('2207052') > -1) {
       return {
-        type: 'bad-body' as const,
+        type: 'retry' as const,
         value: 'Media fetch failed, please try again',
       };
     }
@@ -330,6 +343,20 @@ export class InstagramProvider
       };
     }
 
+    // Meta put the account behind a checkpoint: the token is still valid, so a
+    // refresh cannot help and every post fails until the user logs in on
+    // Instagram and re-connects the channel.
+    if (
+      body.indexOf('You cannot access the app till you log in to') > -1 ||
+      body.indexOf('Session key is malformed') > -1
+    ) {
+      return {
+        type: 'disconnect' as const,
+        value:
+          'Instagram requires you to log in at instagram.com and follow its instructions before posting can resume. After that, please reconnect this channel.',
+      };
+    }
+
     if (body.indexOf('190,') > -1) {
       return {
         type: 'bad-body' as const,
@@ -360,11 +387,28 @@ export class InstagramProvider
       };
     }
 
+    if (body.indexOf('1772107') > -1) {
+      return {
+        type: 'bad-body' as const,
+        value:
+          'Instagram did not add the comment, the post itself was published. Please try again with different comment text',
+      };
+    }
+
     if (body.indexOf('2207082') > -1) {
       return {
         type: 'retry' as const,
-        value: 'Could not upload your media',
-      }
+        value:
+          'Instagram could not process this video. If you attached audio to a video that has no sound track, set the original video volume to 0 and try again',
+      };
+    }
+
+    if (body.indexOf('2207085') > -1) {
+      return {
+        type: 'bad-body' as const,
+        value:
+          'Instagram could not process the video, please check the video format, duration and resolution and try again',
+      };
     }
 
     if (body.indexOf('2207077') > -1) {
@@ -377,14 +421,22 @@ export class InstagramProvider
     if (body.indexOf('too little or too many attachments') > -1) {
       return {
         type: 'bad-body' as const,
-        value: 'Instagram carousel should have between 2 and 10 media attachments',
+        value: 'Instagram carousel should have between 2 and 20 media attachments',
       }
     }
 
     if (body.indexOf('2207027') > -1) {
       return {
+        type: 'retry' as const,
+        value: 'Instagram media was not ready for publishing, please try again',
+      };
+    }
+
+    if (body.indexOf('2207018') > -1) {
+      return {
         type: 'bad-body' as const,
-        value: 'Unknown error, please try again later or contact support',
+        value:
+          "One of the collaborators could not be tagged, please check the username is correct, the account is public, and that it allows collaborator invites",
       };
     }
 
@@ -423,7 +475,7 @@ export class InstagramProvider
   }
 
   async generateAuthUrl() {
-    const state = makeId(6);
+    const state = makeSecureId(6);
     return {
       url:
         `https://www.facebook.com/${META_GRAPH_API_VERSION}/dialog/oauth` +
@@ -433,7 +485,7 @@ export class InstagramProvider
         )}` +
         `&state=${state}` +
         `&scope=${encodeURIComponent(this.scopes.join(','))}`,
-      codeVerifier: makeId(10),
+      codeVerifier: makeSecureId(10),
       state,
     };
   }
@@ -495,6 +547,7 @@ export class InstagramProvider
     };
   }
 
+  @DashboardFunction()
   async pages(token: string) {
     const [accessToken, userToken] = token.split('___');
     const seenPageIds = new Set<string>();
@@ -629,15 +682,66 @@ export class InstagramProvider
     ).json();
 
     if (status_code === 'ERROR' || status_code === 'EXPIRED') {
+      const handleError = this.handleErrors(status || '', 200);
+      if (handleError?.type === 'disconnect') {
+        throw new Disconnect(
+          this.identifier,
+          JSON.stringify({ status_code, status }),
+          '{}',
+          handleError?.value
+        );
+      }
       throw new BadBody(
         this.identifier,
         JSON.stringify({ status_code, status }),
         '{}',
-        status || 'Instagram could not process the media'
+        handleError?.value ||
+          (status !== status_code && status) ||
+          'Instagram could not process the media'
       );
     }
 
     return status_code;
+  }
+
+  // After a rejected media_publish: the id of the media Instagram created from
+  // the container if it reports it as published, '' if it did not publish.
+  private async igPublishedMediaId(
+    containerId: string,
+    igId: string,
+    checkToken: string,
+    type: string
+  ): Promise<string> {
+    try {
+      const status = await this.igContainerStatus(
+        containerId,
+        checkToken,
+        type
+      );
+      const { data } =
+        status === 'PUBLISHED'
+          ? await (
+              await this.fetch(
+                `https://${type}/${META_GRAPH_API_VERSION}/${igId}/media?fields=id&limit=1&access_token=${checkToken}`,
+                undefined,
+                '',
+                0,
+                true
+              )
+            ).json()
+          : { data: [] };
+      const mediaId = data?.[0]?.id || '';
+      console.log(
+        `Instagram blocked media_publish for container ${containerId}: status ${status}, media ${mediaId || 'none'}`
+      );
+      return mediaId;
+    } catch (e) {
+      console.error(
+        `Instagram blocked media_publish for container ${containerId}: status probe failed`,
+        e
+      );
+      return '';
+    }
   }
 
   // The post is live, the permalink is only cosmetic: never fail (and risk
@@ -695,6 +799,10 @@ export class InstagramProvider
           ? firstPost?.media?.length === 1
             ? isStory
               ? `video_url=${m.path}&media_type=STORIES`
+              : m?.thumbnail
+              ? `video_url=${m.path}&media_type=REELS&cover_url=${encodeURIComponent(
+                  m.thumbnail
+                )}`
               : `video_url=${m.path}&media_type=REELS&thumb_offset=${
                   m?.thumbnailTimestamp || 0
                 }`
@@ -706,6 +814,13 @@ export class InstagramProvider
           : isStory
           ? `image_url=${m.path}&media_type=STORIES`
           : `image_url=${m.path}`;
+
+        // alt_text is only supported on images (single or carousel item),
+        // not on videos or stories
+        const altText =
+          m.alt && !isStory && !hasExtension(m.path, 'mp4')
+            ? `&alt_text=${encodeURIComponent(m.alt)}`
+            : ``;
 
         const trialParams = isTrialReel
           ? `&trial_params=${encodeURIComponent(
@@ -746,7 +861,7 @@ export class InstagramProvider
 
         const { id: photoId } = await (
           await this.fetch(
-            `https://${type}/${META_GRAPH_API_VERSION}/${id}/media?${mediaType}${isCarousel}${itemCollaborators}${trialParams}${audioConfiguration}&access_token=${accessToken}${caption}`,
+            `https://${type}/${META_GRAPH_API_VERSION}/${id}/media?${mediaType}${altText}${isCarousel}${itemCollaborators}${trialParams}${audioConfiguration}&access_token=${accessToken}${caption}`,
             {
               method: 'POST',
             }
@@ -944,14 +1059,34 @@ export class InstagramProvider
         ? pendingData.carouselId
         : pendingData.containers[0];
 
-    const { id: mediaId } = await (
-      await this.fetch(
-        `https://${pendingData.type}/${META_GRAPH_API_VERSION}/${igId}/media_publish?creation_id=${creationId}&access_token=${accessToken}&field=id`,
-        {
-          method: 'POST',
-        }
-      )
-    ).json();
+    let mediaId: string;
+    try {
+      ({ id: mediaId } = await (
+        await this.fetch(
+          `https://${pendingData.type}/${META_GRAPH_API_VERSION}/${igId}/media_publish?creation_id=${creationId}&access_token=${accessToken}&field=id`,
+          {
+            method: 'POST',
+          }
+        )
+      ).json());
+    } catch (err) {
+      // Instagram sometimes answers media_publish with 2207051 ("action is
+      // blocked") and still publishes the container: ask Instagram before
+      // failing a post that may already be live.
+      if (!(err instanceof BadBody) || !err.message.includes('blocked')) {
+        throw err;
+      }
+
+      mediaId = await this.igPublishedMediaId(
+        creationId!,
+        igId,
+        checkToken,
+        pendingData.type
+      );
+      if (!mediaId) {
+        throw err;
+      }
+    }
 
     return {
       status: 'completed',

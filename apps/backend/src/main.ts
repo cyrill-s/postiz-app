@@ -52,6 +52,15 @@ async function start() {
         process.env.FRONTEND_URL,
         'http://localhost:6274',
         ...(process.env.MAIN_URL ? [process.env.MAIN_URL] : []),
+        // Optional: the Canva app calls the public API from its iframe origin
+        // (browsers send it lowercase, e.g. https://app-aabbcc.canva-apps.com)
+        ...(process.env.CANVA_APP_ORIGIN
+          ? [
+              process.env.CANVA_APP_ORIGIN.trim()
+                .replace(/\/+$/, '')
+                .toLowerCase(),
+            ]
+          : []),
       ],
     },
   });
@@ -83,6 +92,13 @@ async function start() {
   try {
     Logger.log(`Listening on port ${port}`, 'BackendBootstrap');
     await app.listen(port);
+
+    // Keep idle connections open longer than the load balancer does (AWS ALB
+    // idle timeout is 900s). Node's default of 5s lets the backend close a
+    // connection the ALB is about to reuse, which the ALB returns as a 502.
+    const server = app.getHttpServer();
+    server.keepAliveTimeout = 905_000;
+    server.headersTimeout = 906_000;
     globalThis.postizBackendStartupComplete?.();
     console.log('Backend started successfully on port ' + port);
 

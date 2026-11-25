@@ -1,9 +1,18 @@
-import { PrismaRepository } from '@gitroom/nestjs-libraries/database/prisma/prisma.service';
-import { Injectable } from '@nestjs/common';
+import {
+  PrismaRepository,
+  PrismaTransaction,
+} from '@gitroom/nestjs-libraries/database/prisma/prisma.service';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { Post as PostBody } from '@gitroom/nestjs-libraries/dtos/posts/create.post.dto';
 import {
   APPROVED_SUBMIT_FOR_ORDER,
   CreationMethod,
+  Integration,
   Post,
   State,
 } from '@prisma/client';
@@ -16,6 +25,10 @@ import isSameOrAfter from 'dayjs/plugin/isSameOrAfter';
 import utc from 'dayjs/plugin/utc';
 import { v4 as uuidv4 } from 'uuid';
 import { CreateTagDto } from '@gitroom/nestjs-libraries/dtos/posts/create.tag.dto';
+import {
+  EncryptionService,
+  integrationEncryptedFields,
+} from '@gitroom/nestjs-libraries/services/encryption.service';
 
 dayjs.extend(isoWeek);
 dayjs.extend(weekOfYear);
@@ -30,8 +43,27 @@ export class PostsRepository {
     private _comments: PrismaRepository<'comments'>,
     private _tags: PrismaRepository<'tags'>,
     private _tagsPosts: PrismaRepository<'tagsPosts'>,
-    private _errors: PrismaRepository<'errors'>
+    private _errors: PrismaRepository<'errors'>,
+    private _transaction: PrismaTransaction,
+    private _encryptionService: EncryptionService
   ) {}
+
+  // A post that was loaded with its whole channel carries the tokens of the
+  // channel the way they are stored, so they are decrypted like in the
+  // integration repository
+  private async decryptIntegration<T extends { integration?: Integration | null }>(
+    post: T | null
+  ) {
+    return post?.integration
+      ? {
+          ...post,
+          integration: await this._encryptionService.decryptFields(
+            post.integration,
+            integrationEncryptedFields
+          ),
+        }
+      : post;
+  }
 
   searchForMissingThreeHoursPosts() {
     return this._post.model.post.findMany({
@@ -59,6 +91,18 @@ export class PostsRepository {
           },
         },
         publishDate: true,
+      },
+    });
+  }
+
+  getPostState(id: string) {
+    return this._post.model.post.findUnique({
+      where: {
+        id,
+        deletedAt: null,
+      },
+      select: {
+        state: true,
       },
     });
   }
@@ -126,6 +170,32 @@ export class PostsRepository {
     });
   }
 
+  // Post.error persists the raw serialized workflow failure; only curated
+  // provider messages are surfaced to the calendar and the public API —
+  // bad_body failures whose message came from a provider handleErrors
+  // mapping or a hand-written provider throw (unmapped API responses carry
+  // the 'Unknown Error' placeholder instead). Internal debug strings (e.g.
+  // 'Refresh channel needed') and unmapped failures come out as null.
+  private curatedError(error?: string | null): string | null {
+    if (!error) {
+      return null;
+    }
+    try {
+      const parsed = JSON.parse(error);
+      const [type, message] = parsed?.cause?.failure?.message
+        ? [parsed?.cause?.type, parsed?.cause?.failure?.message]
+        : [
+            parsed?.failure?.cause?.applicationFailureInfo?.type,
+            parsed?.failure?.cause?.message,
+          ];
+      return type === 'bad_body' && message && message !== 'Unknown Error'
+        ? message
+        : null;
+    } catch (err) {
+      return null;
+    }
+  }
+
   async getPosts(orgId: string, query: GetPostsDto) {
     // Use the provided start and end dates directly
     const startDate = dayjs.utc(query.startDate).toDate();
@@ -173,11 +243,17 @@ export class PostsRepository {
         releaseId: true,
         telegramDelivery: true,
         state: true,
+        error: true,
         intervalInDays: true,
         group: true,
         creationMethod: true,
         settings: true,
         tags: {
+          where: {
+            tag: {
+              deletedAt: null,
+            },
+          },
           select: {
             tag: true,
           },
@@ -193,27 +269,41 @@ export class PostsRepository {
       },
     });
 
-    return list.reduce((all, post) => {
-      if (!post.intervalInDays) {
-        return [...all, post];
+    // This runs on the request thread, so keep it linear: push into one array
+    // (spreading the accumulator on every post was quadratic and blocked the
+    // event loop for seconds on large orgs), and expand repeating posts only
+    // inside [startDate, endDate] instead of from their first publish date.
+    const rangeStart = dayjs.utc(startDate);
+    const rangeEnd = dayjs.utc(endDate);
+    const result: any[] = [];
+
+    for (const row of list) {
+      const post = { ...row, error: this.curatedError(row.error) };
+      if (!post.intervalInDays || post.intervalInDays < 1) {
+        result.push(post);
+        continue;
       }
 
-      const addMorePosts = [];
-      let startingDate = dayjs.utc(post.publishDate);
-      while (dayjs.utc(endDate).isSameOrAfter(startingDate)) {
-        if (dayjs(startingDate).isSameOrAfter(dayjs.utc(post.publishDate))) {
-          addMorePosts.push({
-            ...post,
-            publishDate: startingDate.toDate(),
-            actualDate: post.publishDate,
-          });
-        }
-
-        startingDate = startingDate.add(post.intervalInDays, 'days');
+      const firstDate = dayjs.utc(post.publishDate);
+      let occurrence = firstDate;
+      if (rangeStart.isAfter(firstDate)) {
+        const skip = Math.ceil(
+          rangeStart.diff(firstDate, 'day', true) / post.intervalInDays
+        );
+        occurrence = firstDate.add(skip * post.intervalInDays, 'day');
       }
 
-      return [...all, ...addMorePosts];
-    }, [] as any[]);
+      while (!occurrence.isAfter(rangeEnd)) {
+        result.push({
+          ...post,
+          publishDate: occurrence.toDate(),
+          actualDate: post.publishDate,
+        });
+        occurrence = occurrence.add(post.intervalInDays, 'day');
+      }
+    }
+
+    return result;
   }
 
   async getPostsList(orgId: string, query: GetPostsListDto) {
@@ -268,6 +358,11 @@ export class PostsRepository {
               customerId: query.customer,
             }
           : {}),
+        ...(query.integrations
+          ? {
+              id: { in: query.integrations },
+            }
+          : {}),
       },
     };
 
@@ -291,6 +386,11 @@ export class PostsRepository {
           group: true,
           creationMethod: true,
           tags: {
+            where: {
+              tag: {
+                deletedAt: null,
+              },
+            },
             select: {
               tag: true,
             },
@@ -340,8 +440,8 @@ export class PostsRepository {
     });
   }
 
-  getPostsByGroup(orgId: string, group: string) {
-    return this._post.model.post.findMany({
+  async getPostsByGroup(orgId: string, group: string) {
+    const posts = await this._post.model.post.findMany({
       where: {
         group,
         ...(orgId ? { organizationId: orgId } : {}),
@@ -350,21 +450,203 @@ export class PostsRepository {
       include: {
         integration: true,
         tags: {
+          where: {
+            tag: {
+              deletedAt: null,
+            },
+          },
           select: {
             tag: true,
           },
         },
       },
     });
+
+    return Promise.all(posts.map((p) => this.decryptIntegration(p)));
   }
 
-  getPost(
+  async cancelPostGroup(orgId: string, group: string) {
+    try {
+      return await this._transaction.model.$transaction(async (tx) => {
+        const roots = await tx.post.findMany({
+          where: {
+            organizationId: orgId,
+            group,
+            parentPostId: null,
+            deletedAt: null,
+          },
+          orderBy: { id: 'asc' },
+          select: {
+            id: true,
+            state: true,
+            publishDate: true,
+            integration: { select: { providerIdentifier: true } },
+          },
+        });
+        if (!roots.length) {
+          throw new NotFoundException('Post group not found');
+        }
+
+        const now = new Date();
+        const earliestPublishDate = new Date(now.getTime() + 5 * 60 * 1000);
+        if (
+          roots.some(
+            (post) =>
+              (post.state !== 'QUEUE' && post.state !== 'DRAFT') ||
+              post.publishDate.getTime() <= earliestPublishDate.getTime()
+          )
+        ) {
+          throw new ConflictException({ error: 'publishing' });
+        }
+        // Recheck eligibility in the write itself. A partial match must roll
+        // back all root deletes before any children or workflows are touched.
+        const cancelled = await tx.post.updateMany({
+          where: {
+            organizationId: orgId,
+            group,
+            id: { in: roots.map((post) => post.id) },
+            parentPostId: null,
+            deletedAt: null,
+            state: { in: ['QUEUE', 'DRAFT'] },
+            publishDate: { gt: earliestPublishDate },
+          },
+          data: { deletedAt: now },
+        });
+        if (cancelled.count !== roots.length) {
+          throw new ConflictException({ error: 'publishing' });
+        }
+        await tx.post.updateMany({
+          where: {
+            organizationId: orgId,
+            group,
+            parentPostId: { not: null },
+            deletedAt: null,
+          },
+          data: { deletedAt: now },
+        });
+        return roots;
+      }, { isolationLevel: 'Serializable' });
+    } catch (err) {
+      // A publish/edit racing a serializable transaction can abort it instead
+      // of returning a short update count. That is the same guarded conflict.
+      if ((err as { code?: string })?.code === 'P2034') {
+        throw new ConflictException({ error: 'publishing' });
+      }
+      throw err;
+    }
+  }
+
+  updatePostGroup(
+    orgId: string,
+    group: string,
+    changes: {
+      roots: Pick<Post, 'id' | 'updatedAt'>[];
+      posts: { id: string; content: string }[];
+      date?: string;
+      datePostIds: string[];
+      removePostIds: string[];
+    }
+  ) {
+    return this._transaction.model.$transaction(async (tx) => {
+      const now = new Date();
+      if (changes.date && new Date(changes.date).getTime() <= now.getTime()) {
+        throw new BadRequestException({ msg: 'date must be in the future' });
+      }
+      // Claim every affected root against the snapshot that was validated.
+      // A concurrent edit/publish or crossing the guard rolls back the whole PUT.
+      for (const root of changes.roots) {
+        const edit = changes.posts.find((post) => post.id === root.id);
+        const removed = changes.removePostIds.includes(root.id);
+        const claimed = await tx.post.updateMany({
+          where: {
+            id: root.id,
+            organizationId: orgId,
+            group,
+            parentPostId: null,
+            deletedAt: null,
+            updatedAt: root.updatedAt,
+            state: { in: ['QUEUE', 'DRAFT'] },
+            publishDate: { gte: new Date(now.getTime() + 5 * 60 * 1000) },
+          },
+          data: {
+            updatedAt: now,
+            ...(edit ? { content: edit.content } : {}),
+            ...(removed ? { deletedAt: now } : {}),
+            ...(changes.date && !removed
+              ? {
+                  publishDate: new Date(changes.date),
+                  releaseId: null,
+                  releaseURL: null,
+                }
+              : {}),
+          },
+        });
+        if (claimed.count !== 1) {
+          throw new ConflictException({ error: 'publishing' });
+        }
+      }
+
+      const childDateIds = changes.datePostIds.filter(
+        (id) => !changes.roots.some((root) => root.id === id)
+      );
+      if (changes.date && childDateIds.length) {
+        await tx.post.updateMany({
+          where: {
+            organizationId: orgId,
+            group,
+            deletedAt: null,
+            id: { in: childDateIds },
+          },
+          data: {
+            publishDate: new Date(changes.date),
+            releaseId: null,
+            releaseURL: null,
+          },
+        });
+      }
+      if (changes.removePostIds.length) {
+        await tx.post.updateMany({
+          where: {
+            organizationId: orgId,
+            group,
+            deletedAt: null,
+            id: { in: changes.removePostIds },
+          },
+          data: { deletedAt: now },
+        });
+      }
+      // Same stable-group semantics as keepGroup=true, without the upsert's
+      // group-wide sweep or rewriting images/settings/tags/children.
+    });
+  }
+
+  // the posts of the other channels in the batch, without the given group
+  getPostsByBatch(orgId: string, batchId: string, exceptGroup: string) {
+    return this._post.model.post.findMany({
+      where: {
+        organizationId: orgId,
+        batchId,
+        group: {
+          not: exceptGroup,
+        },
+        deletedAt: null,
+        integration: {
+          deletedAt: null,
+        },
+      },
+      orderBy: {
+        createdAt: 'asc',
+      },
+    });
+  }
+
+  async getPost(
     id: string,
     includeIntegration = false,
     orgId?: string,
     isFirst?: boolean
   ) {
-    return this._post.model.post.findUnique({
+    const post = await this._post.model.post.findUnique({
       where: {
         id,
         ...(orgId ? { organizationId: orgId } : {}),
@@ -375,6 +657,11 @@ export class PostsRepository {
           ? {
               integration: true,
               tags: {
+                where: {
+                  tag: {
+                    deletedAt: null,
+                  },
+                },
                 select: {
                   tag: true,
                 },
@@ -384,6 +671,8 @@ export class PostsRepository {
         childrenPost: true,
       },
     });
+
+    return this.decryptIntegration(post);
   }
 
   async getTelegramDelivery(orgId: string, id: string) {
@@ -441,7 +730,12 @@ export class PostsRepository {
     });
   }
 
-  updateReleaseId(id: string, orgId: string, releaseId: string) {
+  updateReleaseId(
+    id: string,
+    orgId: string,
+    releaseId: string,
+    releaseURL?: string
+  ) {
     return this._post.model.post.update({
       where: {
         id,
@@ -450,6 +744,25 @@ export class PostsRepository {
       },
       data: {
         releaseId: String(releaseId),
+        ...(releaseURL ? { releaseURL } : {}),
+      },
+    });
+  }
+
+  updateResolvedRelease(
+    id: string,
+    orgId: string,
+    releaseId: string,
+    releaseURL: string
+  ) {
+    return this._post.model.post.update({
+      where: {
+        id,
+        organizationId: orgId,
+      },
+      data: {
+        releaseId,
+        releaseURL,
       },
     });
   }
@@ -549,6 +862,19 @@ export class PostsRepository {
     });
   }
 
+  countPostsOfOtherOrganizations(orgId: string, ids: string[]) {
+    return this._post.model.post.count({
+      where: {
+        organizationId: {
+          not: orgId,
+        },
+        id: {
+          in: ids,
+        },
+      },
+    });
+  }
+
   async createOrUpdatePost(
     state: 'draft' | 'schedule' | 'now' | 'update',
     orgId: string,
@@ -560,11 +886,39 @@ export class PostsRepository {
     // Keep the existing group instead of rotating it, so open clients
     // (calendar) holding the group stay valid. Used by out-of-band updates
     // (agent / MCP / public API); the dashboard keeps the rotate-and-sweep.
-    keepGroup = false
+    keepGroup = false,
+    // Shared by the posts saved together for several channels, so opening one
+    // of them in the editor brings the others.
+    batchId?: string
   ) {
     const posts: Post[] = [];
     const uuid = uuidv4();
     const group = keepGroup && body.group ? body.group : uuid;
+
+    // an edited post stays in the batch it was created in, even when it is
+    // saved on its own or with a group that was rotated since
+    const ids = body.value.map((value) => value.id).filter(Boolean);
+    const existingBatchId =
+      body.group || ids.length
+        ? (
+            await this._post.model.post.findFirst({
+              where: {
+                organizationId: orgId,
+                deletedAt: null,
+                batchId: {
+                  not: null,
+                },
+                OR: [
+                  ...(body.group ? [{ group: body.group }] : []),
+                  ...(ids.length ? [{ id: { in: ids } }] : []),
+                ],
+              },
+              select: {
+                batchId: true,
+              },
+            })
+          )?.batchId
+        : undefined;
 
     for (const value of body.value) {
       const updateData = (type: 'create' | 'update') => ({
@@ -593,6 +947,7 @@ export class PostsRepository {
         content: value.content,
         delay: value.delay || 0,
         group,
+        batchId: existingBatchId || batchId,
         intervalInDays: inter ? +inter : null,
         approvedSubmitForOrder: APPROVED_SUBMIT_FOR_ORDER.NO,
         ...(type === 'create' ? { creationMethod } : {}),
@@ -642,6 +997,7 @@ export class PostsRepository {
           const tagsList = await this._tags.model.tags.findMany({
             where: {
               orgId: orgId,
+              deletedAt: null,
               name: {
                 in: tags.map((tag) => tag.label).filter((f) => f),
               },
@@ -672,6 +1028,7 @@ export class PostsRepository {
       ? (
           await this._post.model.post.findFirst({
             where: {
+              organizationId: orgId,
               group: body.group,
               deletedAt: null,
               parentPostId: null,
@@ -686,6 +1043,7 @@ export class PostsRepository {
     if (body.group && !keepGroup) {
       await this._post.model.post.updateMany({
         where: {
+          organizationId: orgId,
           group: body.group,
           deletedAt: null,
         },
@@ -701,6 +1059,7 @@ export class PostsRepository {
     if (body.group && keepGroup) {
       await this._post.model.post.updateMany({
         where: {
+          organizationId: orgId,
           group: body.group,
           deletedAt: null,
           id: {
@@ -750,8 +1109,8 @@ export class PostsRepository {
     });
   }
 
-  getPostById(id: string, org?: string) {
-    return this._post.model.post.findUnique({
+  async getPostById(id: string, org?: string) {
+    const post = await this._post.model.post.findUnique({
       where: {
         id,
         ...(org ? { organizationId: org } : {}),
@@ -776,6 +1135,8 @@ export class PostsRepository {
         },
       },
     });
+
+    return this.decryptIntegration(post);
   }
 
   private get postTimelineSelect() {
@@ -911,13 +1272,79 @@ export class PostsRepository {
     );
   }
 
-  async getComments(postId: string) {
+  getCommentsForPosts(postIds: string[]) {
     return this._comments.model.comments.findMany({
       where: {
-        postId,
+        postId: {
+          in: postIds,
+        },
+        deletedAt: null,
+      },
+      include: {
+        user: {
+          select: {
+            name: true,
+            lastName: true,
+          },
+        },
       },
       orderBy: {
         createdAt: 'asc',
+      },
+    });
+  }
+
+  getCommentById(id: string) {
+    return this._comments.model.comments.findFirst({
+      where: {
+        id,
+        deletedAt: null,
+      },
+      include: {
+        post: {
+          select: {
+            id: true,
+            organizationId: true,
+          },
+        },
+      },
+    });
+  }
+
+  setCommentResolved(id: string, resolvedAt: Date | null) {
+    return this._comments.model.comments.update({
+      where: {
+        id,
+      },
+      data: {
+        resolvedAt,
+      },
+    });
+  }
+
+  getAnchoredCommentsForPost(postId: string) {
+    return this._comments.model.comments.findMany({
+      where: {
+        postId,
+        deletedAt: null,
+        anchorStart: {
+          not: null,
+        },
+      },
+    });
+  }
+
+  detachAnchorsForPost(postId: string, ids: string[]) {
+    return this._comments.model.comments.updateMany({
+      where: {
+        postId,
+        id: {
+          in: ids,
+        },
+      },
+      data: {
+        anchorStart: null,
+        anchorEnd: null,
       },
     });
   }
@@ -953,8 +1380,8 @@ export class PostsRepository {
     });
   }
 
-  deleteTag(id: string, orgId: string) {
-    return this._tags.model.tags.update({
+  async deleteTag(id: string, orgId: string) {
+    const tag = await this._tags.model.tags.update({
       where: {
         id,
         orgId,
@@ -963,13 +1390,28 @@ export class PostsRepository {
         deletedAt: new Date(),
       },
     });
+
+    await this._tagsPosts.model.tagsPosts.deleteMany({
+      where: {
+        tagId: tag.id,
+      },
+    });
+
+    return tag;
   }
 
   createComment(
     orgId: string,
-    userId: string,
+    userId: string | null,
     postId: string,
-    content: string
+    content: string,
+    extra: {
+      displayName?: string;
+      parentId?: string;
+      anchorStart?: number;
+      anchorEnd?: number;
+      anchorQuote?: string;
+    } = {}
   ) {
     return this._comments.model.comments.create({
       data: {
@@ -977,6 +1419,11 @@ export class PostsRepository {
         userId,
         postId,
         content,
+        displayName: extra.displayName ?? null,
+        parentId: extra.parentId ?? null,
+        anchorStart: extra.anchorStart ?? null,
+        anchorEnd: extra.anchorEnd ?? null,
+        anchorQuote: extra.anchorQuote ?? null,
       },
     });
   }

@@ -34,6 +34,23 @@ export interface IAuthenticator {
     postId: string,
     fromDate: number
   ): Promise<AnalyticsData[]>;
+  resolveReleaseId?(
+    accessToken: string,
+    releaseId: string,
+    integration: Integration,
+    settings: any,
+    releaseURL: string
+  ): Promise<
+    | { postId: string; releaseURL: string }
+    | { pending: true }
+    | { unavailable: true }
+    | undefined
+  >; // Final id + URL to persist when the stored releaseId is still a publish id, pending when the platform has no final id yet, unavailable when the post will never get one, undefined when nothing to resolve
+  releaseUrl?(
+    accessToken: string,
+    releaseId: string,
+    integration: Integration
+  ): Promise<string | undefined>; // URL of a post the user connected by hand
   changeNickname?(
     id: string,
     accessToken: string,
@@ -172,13 +189,22 @@ export interface SocialProvider
     ISocialMediaIntegration {
   identifier: string;
   refreshWait?: boolean;
+  // A token rejected by finalizePost means its mutation did not run (it makes
+  // one mutating call): the post activity then refreshes the token and repeats
+  // finalizePost itself. Without it the workflow refreshes and goes back to
+  // checkPostStatus, which for an arm -> confirm -> publish provider finds the
+  // confirmed attempt and stops with a false "may have already published".
+  // Never set it when finalizePost can throw RefreshToken after a mutation
+  // that cannot be repeated.
+  refreshRepeat?: boolean;
   convertToJPEG?: boolean;
   stripLinks?: () => boolean;
   refreshCron?: boolean;
+  refreshErrorMessage?(err: any): string | undefined;
   dto?: any;
   maxLength: (additionalSettings?: any, settings?: any) => number;
   checkValidity(
-    posts: Array<{ path: string; thumbnail?: string }[]>,
+    posts: Array<{ path: string; thumbnail?: string; alt?: string }[]>,
     settings: any,
     additionalSettings: any[]
   ): Promise<string | true>;
@@ -189,7 +215,7 @@ export interface SocialProvider
   ): Promise<PendingCheckResponse>;
   migrationMatch(
     auth: Pick<AuthTokenDetails, 'id' | 'username'>,
-    integration: Integration
+    integration: Omit<Integration, 'token' | 'refreshToken'>
   ): boolean;
   finalizePost(
     accessToken: string,
@@ -200,6 +226,7 @@ export interface SocialProvider
   isChromeExtension?: boolean;
   extensionCookies?: { name: string; domain: string }[];
   editor: 'none' | 'normal' | 'markdown' | 'html';
+  inlineImages?: (settings?: any) => boolean;
   customFields?: () => Promise<
     {
       key: string;

@@ -1,6 +1,6 @@
 import { createHash } from 'crypto';
 import { AuthService } from '@gitroom/helpers/auth/auth.service';
-import { makeId } from '@gitroom/nestjs-libraries/services/make.is';
+import { makeSecureId } from '@gitroom/nestjs-libraries/services/make.secure.id';
 import { getSsrfSafeDispatcher } from '@gitroom/nestjs-libraries/dtos/webhooks/ssrf.safe.dispatcher';
 import { BadBody, RefreshToken, SocialAbstract } from '../social.abstract';
 import {
@@ -72,8 +72,8 @@ export class OkCommunityProvider
   }
 
   async generateAuthUrl() {
-    const state = makeId(32);
-    return { state, url: state, codeVerifier: makeId(32) };
+    const state = makeSecureId(32);
+    return { state, url: state, codeVerifier: makeSecureId(32) };
   }
 
   private validCredentials(data: Credentials) {
