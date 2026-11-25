@@ -61,7 +61,7 @@ import { stripHtmlValidation } from '@gitroom/helpers/utils/strip.html.validatio
 import { History } from '@tiptap/extension-history';
 import { BulletList, ListItem, OrderedList } from '@tiptap/extension-list';
 import Heading from '@tiptap/extension-heading';
-import { Slice } from '@tiptap/pm/model';
+import { Fragment, Slice } from '@tiptap/pm/model';
 import { HeadingComponent } from '@gitroom/frontend/components/new-launch/heading.component';
 import Mention from '@tiptap/extension-mention';
 import { suggestion } from '@gitroom/frontend/components/new-launch/mention.component';
@@ -1356,6 +1356,24 @@ export const OnlyEditor = forwardRef<
     immediatelyRender: false,
     editorProps: {
       handlePaste: (view, event, slice) => !!paste?.(event as any, slice),
+      // the default parser merges consecutive newlines, which drops the
+      // blank lines of pasted plain text; keep each one as an empty paragraph
+      clipboardTextParser: (text, $context, _plain, view) => {
+        const { schema } = view.state;
+        const marks = $context.marks();
+        return Slice.maxOpen(
+          Fragment.from(
+            text
+              .split(/\r\n?|\n/)
+              .map((line) =>
+                schema.nodes.paragraph.create(
+                  null,
+                  line ? schema.text(line, marks) : undefined
+                )
+              )
+          )
+        );
+      },
     },
     onUpdate: (innerProps) => {
       onChange?.(innerProps.editor.getHTML());

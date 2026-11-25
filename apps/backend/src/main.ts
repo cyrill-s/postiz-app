@@ -92,6 +92,13 @@ async function start() {
   try {
     Logger.log(`Listening on port ${port}`, 'BackendBootstrap');
     await app.listen(port);
+
+    // Keep idle connections open longer than the load balancer does (AWS ALB
+    // idle timeout is 900s). Node's default of 5s lets the backend close a
+    // connection the ALB is about to reuse, which the ALB returns as a 502.
+    const server = app.getHttpServer();
+    server.keepAliveTimeout = 905_000;
+    server.headersTimeout = 906_000;
     globalThis.postizBackendStartupComplete?.();
     console.log('Backend started successfully on port ' + port);
 

@@ -69,7 +69,7 @@ export class VkProvider extends SocialAbstract implements SocialProvider {
     formData.append('scope', this.scopes.join(' '));
 
     const { access_token, refresh_token, expires_in } = await (
-      await this.fetch('https://id.vk.com/oauth2/auth', {
+      await this.fetch('https://id.vk.ru/oauth2/auth', {
         method: 'POST',
         body: formData,
       })
@@ -82,7 +82,7 @@ export class VkProvider extends SocialAbstract implements SocialProvider {
     const {
       user: { user_id, first_name, last_name, avatar },
     } = await (
-      await this.fetch('https://id.vk.com/oauth2/user_info', {
+      await this.fetch('https://id.vk.ru/oauth2/user_info', {
         method: 'POST',
         body: newFormData,
       })
@@ -112,7 +112,7 @@ export class VkProvider extends SocialAbstract implements SocialProvider {
 
     return {
       url:
-        'https://id.vk.com/authorize' +
+        'https://id.vk.ru/authorize' +
         `?response_type=code` +
         `&client_id=${process.env.VK_ID}` +
         `&code_challenge_method=S256` +
@@ -154,7 +154,7 @@ export class VkProvider extends SocialAbstract implements SocialProvider {
     );
 
     const { access_token, scope, refresh_token, expires_in } = await (
-      await this.fetch('https://id.vk.com/oauth2/auth', {
+      await this.fetch('https://id.vk.ru/oauth2/auth', {
         method: 'POST',
         body: formData,
       })
@@ -167,7 +167,7 @@ export class VkProvider extends SocialAbstract implements SocialProvider {
     const {
       user: { user_id, first_name, last_name, avatar },
     } = await (
-      await this.fetch('https://id.vk.com/oauth2/user_info', {
+      await this.fetch('https://id.vk.ru/oauth2/user_info', {
         method: 'POST',
         body: newFormData,
       })
@@ -194,10 +194,11 @@ export class VkProvider extends SocialAbstract implements SocialProvider {
         const all = await (
           await this.fetch(
             hasExtension(media.path, 'mp4')
-              ? `https://api.vk.com/method/video.save?access_token=${accessToken}&v=5.251`
-              : `https://api.vk.com/method/photos.getWallUploadServer?owner_id=${userId}&access_token=${accessToken}&v=5.251`
+              ? `https://api.vk.ru/method/video.save?access_token=${accessToken}&v=5.251`
+              : `https://api.vk.ru/method/photos.getWallUploadServer?owner_id=${userId}&access_token=${accessToken}&v=5.251`
           )
         ).json();
+        this.checkApiError(all);
 
         const { data } = await this.getSsrfSafeAxios().get(media.path!, {
           responseType: 'stream',
@@ -234,17 +235,17 @@ export class VkProvider extends SocialAbstract implements SocialProvider {
         formSend.append('server', value.server);
         formSend.append('hash', value.hash);
 
-        const { id } = (
-          await (
-            await fetch(
-              `https://api.vk.com/method/photos.saveWallPhoto?access_token=${accessToken}&v=5.251`,
-              {
-                method: 'POST',
-                body: formSend,
-              }
-            )
-          ).json()
-        ).response[0];
+        const saved = await (
+          await fetch(
+            `https://api.vk.ru/method/photos.saveWallPhoto?access_token=${accessToken}&v=5.251`,
+            {
+              method: 'POST',
+              body: formSend,
+            }
+          )
+        ).json();
+        this.checkApiError(saved);
+        const { id } = saved.response[0];
 
         return {
           id,
@@ -277,7 +278,7 @@ export class VkProvider extends SocialAbstract implements SocialProvider {
 
     const all = await (
       await this.fetch(
-        `https://api.vk.com/method/wall.post?v=5.251&access_token=${accessToken}&client_id=${process.env.VK_ID}`,
+        `https://api.vk.ru/method/wall.post?v=5.251&access_token=${accessToken}&client_id=${process.env.VK_ID}`,
         {
           method: 'POST',
           body,
@@ -323,7 +324,7 @@ export class VkProvider extends SocialAbstract implements SocialProvider {
 
     const all = await (
       await this.fetch(
-        `https://api.vk.com/method/wall.createComment?v=5.251&access_token=${accessToken}&client_id=${process.env.VK_ID}`,
+        `https://api.vk.ru/method/wall.createComment?v=5.251&access_token=${accessToken}&client_id=${process.env.VK_ID}`,
         {
           method: 'POST',
           body,

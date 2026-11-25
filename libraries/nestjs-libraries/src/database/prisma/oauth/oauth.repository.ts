@@ -492,6 +492,7 @@ export class OAuthRepository {
       },
       select: {
         id: true,
+        oauthAppId: true,
         mcpUrl: true,
         apiKey: true,
       },

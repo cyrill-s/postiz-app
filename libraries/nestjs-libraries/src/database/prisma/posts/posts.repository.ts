@@ -12,6 +12,7 @@ import { Post as PostBody } from '@gitroom/nestjs-libraries/dtos/posts/create.po
 import {
   APPROVED_SUBMIT_FOR_ORDER,
   CreationMethod,
+  Integration,
   Post,
   State,
 } from '@prisma/client';
@@ -24,6 +25,10 @@ import isSameOrAfter from 'dayjs/plugin/isSameOrAfter';
 import utc from 'dayjs/plugin/utc';
 import { v4 as uuidv4 } from 'uuid';
 import { CreateTagDto } from '@gitroom/nestjs-libraries/dtos/posts/create.tag.dto';
+import {
+  EncryptionService,
+  integrationEncryptedFields,
+} from '@gitroom/nestjs-libraries/services/encryption.service';
 
 dayjs.extend(isoWeek);
 dayjs.extend(weekOfYear);
@@ -39,8 +44,26 @@ export class PostsRepository {
     private _tags: PrismaRepository<'tags'>,
     private _tagsPosts: PrismaRepository<'tagsPosts'>,
     private _errors: PrismaRepository<'errors'>,
-    private _transaction: PrismaTransaction
+    private _transaction: PrismaTransaction,
+    private _encryptionService: EncryptionService
   ) {}
+
+  // A post that was loaded with its whole channel carries the tokens of the
+  // channel the way they are stored, so they are decrypted like in the
+  // integration repository
+  private async decryptIntegration<T extends { integration?: Integration | null }>(
+    post: T | null
+  ) {
+    return post?.integration
+      ? {
+          ...post,
+          integration: await this._encryptionService.decryptFields(
+            post.integration,
+            integrationEncryptedFields
+          ),
+        }
+      : post;
+  }
 
   searchForMissingThreeHoursPosts() {
     return this._post.model.post.findMany({
@@ -68,6 +91,18 @@ export class PostsRepository {
           },
         },
         publishDate: true,
+      },
+    });
+  }
+
+  getPostState(id: string) {
+    return this._post.model.post.findUnique({
+      where: {
+        id,
+        deletedAt: null,
+      },
+      select: {
+        state: true,
       },
     });
   }
@@ -234,29 +269,41 @@ export class PostsRepository {
       },
     });
 
-    return list
-      .map((post) => ({ ...post, error: this.curatedError(post.error) }))
-      .reduce((all, post) => {
-      if (!post.intervalInDays) {
-        return [...all, post];
+    // This runs on the request thread, so keep it linear: push into one array
+    // (spreading the accumulator on every post was quadratic and blocked the
+    // event loop for seconds on large orgs), and expand repeating posts only
+    // inside [startDate, endDate] instead of from their first publish date.
+    const rangeStart = dayjs.utc(startDate);
+    const rangeEnd = dayjs.utc(endDate);
+    const result: any[] = [];
+
+    for (const row of list) {
+      const post = { ...row, error: this.curatedError(row.error) };
+      if (!post.intervalInDays || post.intervalInDays < 1) {
+        result.push(post);
+        continue;
       }
 
-      const addMorePosts = [];
-      let startingDate = dayjs.utc(post.publishDate);
-      while (dayjs.utc(endDate).isSameOrAfter(startingDate)) {
-        if (dayjs(startingDate).isSameOrAfter(dayjs.utc(post.publishDate))) {
-          addMorePosts.push({
-            ...post,
-            publishDate: startingDate.toDate(),
-            actualDate: post.publishDate,
-          });
-        }
-
-        startingDate = startingDate.add(post.intervalInDays, 'days');
+      const firstDate = dayjs.utc(post.publishDate);
+      let occurrence = firstDate;
+      if (rangeStart.isAfter(firstDate)) {
+        const skip = Math.ceil(
+          rangeStart.diff(firstDate, 'day', true) / post.intervalInDays
+        );
+        occurrence = firstDate.add(skip * post.intervalInDays, 'day');
       }
 
-      return [...all, ...addMorePosts];
-    }, [] as any[]);
+      while (!occurrence.isAfter(rangeEnd)) {
+        result.push({
+          ...post,
+          publishDate: occurrence.toDate(),
+          actualDate: post.publishDate,
+        });
+        occurrence = occurrence.add(post.intervalInDays, 'day');
+      }
+    }
+
+    return result;
   }
 
   async getPostsList(orgId: string, query: GetPostsListDto) {
@@ -393,8 +440,8 @@ export class PostsRepository {
     });
   }
 
-  getPostsByGroup(orgId: string, group: string) {
-    return this._post.model.post.findMany({
+  async getPostsByGroup(orgId: string, group: string) {
+    const posts = await this._post.model.post.findMany({
       where: {
         group,
         ...(orgId ? { organizationId: orgId } : {}),
@@ -414,6 +461,8 @@ export class PostsRepository {
         },
       },
     });
+
+    return Promise.all(posts.map((p) => this.decryptIntegration(p)));
   }
 
   async cancelPostGroup(orgId: string, group: string) {
@@ -591,13 +640,13 @@ export class PostsRepository {
     });
   }
 
-  getPost(
+  async getPost(
     id: string,
     includeIntegration = false,
     orgId?: string,
     isFirst?: boolean
   ) {
-    return this._post.model.post.findUnique({
+    const post = await this._post.model.post.findUnique({
       where: {
         id,
         ...(orgId ? { organizationId: orgId } : {}),
@@ -622,6 +671,8 @@ export class PostsRepository {
         childrenPost: true,
       },
     });
+
+    return this.decryptIntegration(post);
   }
 
   async getTelegramDelivery(orgId: string, id: string) {
@@ -811,6 +862,19 @@ export class PostsRepository {
     });
   }
 
+  countPostsOfOtherOrganizations(orgId: string, ids: string[]) {
+    return this._post.model.post.count({
+      where: {
+        organizationId: {
+          not: orgId,
+        },
+        id: {
+          in: ids,
+        },
+      },
+    });
+  }
+
   async createOrUpdatePost(
     state: 'draft' | 'schedule' | 'now' | 'update',
     orgId: string,
@@ -964,6 +1028,7 @@ export class PostsRepository {
       ? (
           await this._post.model.post.findFirst({
             where: {
+              organizationId: orgId,
               group: body.group,
               deletedAt: null,
               parentPostId: null,
@@ -978,6 +1043,7 @@ export class PostsRepository {
     if (body.group && !keepGroup) {
       await this._post.model.post.updateMany({
         where: {
+          organizationId: orgId,
           group: body.group,
           deletedAt: null,
         },
@@ -993,6 +1059,7 @@ export class PostsRepository {
     if (body.group && keepGroup) {
       await this._post.model.post.updateMany({
         where: {
+          organizationId: orgId,
           group: body.group,
           deletedAt: null,
           id: {
@@ -1042,8 +1109,8 @@ export class PostsRepository {
     });
   }
 
-  getPostById(id: string, org?: string) {
-    return this._post.model.post.findUnique({
+  async getPostById(id: string, org?: string) {
+    const post = await this._post.model.post.findUnique({
       where: {
         id,
         ...(org ? { organizationId: org } : {}),
@@ -1068,6 +1135,8 @@ export class PostsRepository {
         },
       },
     });
+
+    return this.decryptIntegration(post);
   }
 
   private get postTimelineSelect() {
