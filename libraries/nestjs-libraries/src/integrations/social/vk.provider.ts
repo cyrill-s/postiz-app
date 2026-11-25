@@ -198,7 +198,7 @@ export class VkProvider extends SocialAbstract implements SocialProvider {
               : `https://api.vk.ru/method/photos.getWallUploadServer?owner_id=${userId}&access_token=${accessToken}&v=5.251`
           )
         ).json();
-        this.checkApiError(all);
+        checkVkApiError(this.identifier, all);
 
         const { data } = await this.getSsrfSafeAxios().get(media.path!, {
           responseType: 'stream',
@@ -244,7 +244,7 @@ export class VkProvider extends SocialAbstract implements SocialProvider {
             }
           )
         ).json();
-        this.checkApiError(saved);
+        checkVkApiError(this.identifier, saved);
         const { id } = saved.response[0];
 
         return {
