@@ -90,6 +90,7 @@ export interface Integrations {
   name: string;
   id: string;
   disabled?: boolean;
+  reconnectTarget?: string;
   inBetweenSteps: boolean;
   editor: 'none' | 'normal' | 'markdown' | 'html';
   stripLinks?: boolean;

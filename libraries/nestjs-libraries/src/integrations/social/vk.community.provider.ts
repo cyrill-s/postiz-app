@@ -6,6 +6,7 @@ import {
   SocialProvider,
 } from './social.integrations.interface';
 import { makeId } from '@gitroom/nestjs-libraries/services/make.is';
+import { Integration } from '@prisma/client';
 import { AuthService } from '@gitroom/helpers/auth/auth.service';
 
 const MEDIA_MESSAGE =
@@ -31,6 +32,19 @@ export class VkCommunityProvider
   override maxConcurrentJob = 1;
   toolTip =
     'Подключите сообщество его ключом с доступом к стене. Доступны текст и ссылки; фото и видео с этим ключом не загружаются.';
+
+  override migrationMatch(
+    auth: Pick<AuthTokenDetails, 'id' | 'username'>,
+    integration: Pick<Integration, 'profile' | 'internalId'>
+  ) {
+    if (auth.id.startsWith('vk-community-oauth:')) {
+      return (
+        auth.id.replace('vk-community-oauth:', 'vk-community:') ===
+        integration.internalId
+      );
+    }
+    return super.migrationMatch(auth, integration);
+  }
 
   maxLength() {
     return 2048;
