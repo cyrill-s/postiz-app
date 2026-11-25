@@ -131,6 +131,8 @@ export class NoAuthIntegrationsController {
             code: body.code,
             codeVerifier: getCodeVerifier,
             refresh: body.refresh,
+            state: body.state,
+            reconnectId: refresh || undefined,
           },
           details ? JSON.parse(details) : undefined
         );
@@ -243,7 +245,7 @@ export class NoAuthIntegrationsController {
         org.id,
         refresh,
         integration,
-        { id: String(id), username }
+        { id: String(id), username, accessToken, refreshToken, expiresIn }
       );
     } else if (!refresh) {
       // A fresh connect of a migration target for an account the org already

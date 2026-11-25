@@ -11,6 +11,8 @@ export interface IAuthenticator {
       code: string;
       codeVerifier: string;
       refresh?: string;
+      state?: string;
+      reconnectId?: string;
     },
     clientInformation?: ClientInformation
   ): Promise<AuthTokenDetails | string>;
@@ -188,6 +190,7 @@ export interface SocialProvider
   extends IAuthenticator,
     ISocialMediaIntegration {
   identifier: string;
+  reconnectOnly?: boolean;
   refreshWait?: boolean;
   // A token rejected by finalizePost means its mutation did not run (it makes
   // one mutating call): the post activity then refreshes the token and repeats
@@ -215,7 +218,7 @@ export interface SocialProvider
   ): Promise<PendingCheckResponse>;
   migrationMatch(
     auth: Pick<AuthTokenDetails, 'id' | 'username'>,
-    integration: Omit<Integration, 'token' | 'refreshToken'>
+    integration: Pick<Integration, 'profile' | 'internalId'>
   ): boolean;
   finalizePost(
     accessToken: string,

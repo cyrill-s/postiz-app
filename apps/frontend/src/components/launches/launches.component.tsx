@@ -566,13 +566,14 @@ export const LaunchesComponent = () => {
           identifier: string;
           isCustomFields?: boolean;
           isChromeExtension?: boolean;
+          reconnectTarget?: string;
           customFields?: any[];
         }
       ) =>
       async () => {
         // Custom-fields providers (Bluesky, etc.) have no OAuth URL to redirect
         // to: reconnect by re-entering the credentials, like the menu does.
-        if (integration.isCustomFields) {
+        if (integration.isCustomFields && !integration.reconnectTarget) {
           modal.openModal({
             title: t('custom_url', 'Custom URL'),
             withCloseButton: false,
@@ -605,7 +606,7 @@ export const LaunchesComponent = () => {
             }
           )
         ).json();
-        window.location.href = url;
+        if (url) window.location.href = url;
       },
     []
   );

@@ -9,6 +9,7 @@ import { IntegrationRepository } from '@gitroom/nestjs-libraries/database/prisma
 import { IntegrationManager } from '@gitroom/nestjs-libraries/integrations/integration.manager';
 import {
   AnalyticsData,
+  AuthTokenDetails,
   SocialProvider,
 } from '@gitroom/nestjs-libraries/integrations/social/social.integrations.interface';
 import { Integration, Organization } from '@prisma/client';
@@ -222,7 +223,10 @@ export class IntegrationService {
     org: string,
     oldInternalId: string,
     newProvider: string,
-    auth: { id: string; username: string }
+    auth: Pick<
+      AuthTokenDetails,
+      'id' | 'username' | 'accessToken' | 'refreshToken' | 'expiresIn'
+    >
   ) {
     const existing = await this._integrationRepository.getIntegrationByInternalId(
       org,
@@ -232,7 +236,8 @@ export class IntegrationService {
     if (
       !existing ||
       this._integrationManager.getMigrationTarget(
-        existing.providerIdentifier
+        existing.providerIdentifier,
+        existing.internalId
       ) !== newProvider
     ) {
       throw new NotEnoughScopes(
@@ -265,7 +270,15 @@ export class IntegrationService {
       newProvider,
       existing.rootInternalId === existing.internalId
         ? auth.id
-        : existing.rootInternalId
+        : existing.rootInternalId,
+      {
+        token: auth.accessToken,
+        refreshToken: auth.refreshToken ?? '',
+        tokenExpiration: new Date(
+          Date.now() + (auth.expiresIn || 999999999) * 1000
+        ),
+        refreshNeeded: false,
+      }
     );
   }
 

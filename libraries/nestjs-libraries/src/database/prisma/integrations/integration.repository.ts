@@ -309,16 +309,19 @@ export class IntegrationRepository {
   }
 
   // Moves a channel to another provider in place (MIGRATE_PROVIDERS): only the
-  // provider and the app-scoped ids change, so the integration id - and with it
-  // scheduled posts, settings and customers - survives the migration. The
-  // follow-up createOrUpdateIntegration upsert matches the new internalId and
-  // stores the fresh tokens.
+  // provider and the app-scoped ids change in place, preserving scheduled
+  // posts, settings and customers. When reconnecting, swap the credentials
+  // in the same write so workers always see a matching provider and token.
   async migrateIntegration(
     org: string,
     id: string,
     internalId: string,
     providerIdentifier: string,
-    rootInternalId: string
+    rootInternalId: string,
+    credentials?: Pick<
+      Integration,
+      'token' | 'refreshToken' | 'tokenExpiration' | 'refreshNeeded'
+    >
   ) {
     // A soft-deleted channel can still hold the target internalId
     // (deleteChannel keeps it): rename it out of the way like updateIntegration
@@ -353,6 +356,7 @@ export class IntegrationRepository {
         organizationId: org,
       },
       data: {
+        ...credentials,
         internalId,
         providerIdentifier,
         rootInternalId,

@@ -191,7 +191,7 @@ export abstract class SocialAbstract {
    */
   public migrationMatch(
     auth: Pick<AuthTokenDetails, 'id' | 'username'>,
-    integration: Omit<Integration, 'token' | 'refreshToken'>
+    integration: Pick<Integration, 'profile' | 'internalId'>
   ): boolean {
     return !!auth.username && auth.username === integration.profile;
   }

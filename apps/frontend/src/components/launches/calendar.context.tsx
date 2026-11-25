@@ -103,6 +103,7 @@ export interface Integrations {
   id: string;
   internalId?: string;
   disabled?: boolean;
+  reconnectTarget?: string;
   inBetweenSteps: boolean;
   editor: 'none' | 'normal' | 'markdown' | 'html';
   stripLinks?: boolean;
