@@ -1,3 +1,4 @@
+import { EncryptionService } from '@gitroom/nestjs-libraries/encryption/encryption.service';
 import 'reflect-metadata';
 import { HttpException } from '@nestjs/common';
 import { IsString } from 'class-validator';
@@ -136,7 +137,8 @@ describe('public post group edit/cancel (service and scoped repository writes)',
       {} as any,
       { model: { comments: { findMany: jest.fn().mockResolvedValue([]) } } } as any,
       {} as any, {} as any, {} as any,
-      { model: { $transaction: transaction } } as any
+      { model: { $transaction: transaction } } as any,
+      new EncryptionService()
     );
     list = jest.fn(({ query }) => (async function* () {
       yield { workflowId: `old-${query.match(/postId="([^"]+)"/)[1]}` };
