@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
+import { VK_COMMUNITY_OAUTH_STATE_PREFIX } from '@gitroom/helpers/utils/vk.oauth';
 import { AuthService } from '@gitroom/helpers/auth/auth.service';
 import { getSsrfSafeDispatcher } from '@gitroom/nestjs-libraries/dtos/webhooks/ssrf.safe.dispatcher';
 import {
@@ -69,7 +70,7 @@ export class VkCommunityOAuthProvider
 
   private redirectUri() {
     return new URL(
-      '/integrations/social/vk-community-oauth',
+      '/integrations/social/vk',
       process.env.FRONTEND_URL
     ).href;
   }
@@ -79,7 +80,8 @@ export class VkCommunityOAuthProvider
   }
 
   async generateAuthUrl() {
-    const state = randomBytes(32).toString('base64url');
+    const state =
+      VK_COMMUNITY_OAUTH_STATE_PREFIX + randomBytes(32).toString('base64url');
     const codeVerifier = randomBytes(64).toString('base64url');
     const authorize = new URL('https://id.vk.ru/authorize');
     authorize.search = new URLSearchParams({

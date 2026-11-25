@@ -42,16 +42,17 @@ describe('VK community via VK ID', () => {
 
   afterEach(() => jest.restoreAllMocks());
 
-  it('requests the dedicated app and the two approved scopes using the new callback', async () => {
+  it('requests the dedicated app and the two approved scopes using the registered VK callback', async () => {
     const session = await provider.generateAuthUrl();
     const url = new URL(session.url);
     expect(url.origin).toBe('https://id.vk.ru');
     expect(url.searchParams.get('client_id')).toBe(app);
     expect(url.searchParams.get('redirect_uri')).toBe(
-      'https://postiz.example/integrations/social/vk-community-oauth'
+      'https://postiz.example/integrations/social/vk'
     );
     expect(url.searchParams.get('scope')).toBe('wall photos');
     expect(url.searchParams.get('state')).toBe(session.state);
+    expect(session.state).toMatch(/^vk_community_[A-Za-z0-9_-]{43}$/);
     expect(url.searchParams.get('code_challenge_method')).toBe('S256');
     expect(url.searchParams.get('code_challenge')).not.toBe(
       session.codeVerifier

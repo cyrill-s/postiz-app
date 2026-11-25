@@ -9,6 +9,7 @@ import { useFetch } from '@gitroom/helpers/utils/custom.fetch';
 import { continueProviderList } from '@gitroom/frontend/components/new-launch/providers/continue-provider/list';
 import { IntegrationContext } from '@gitroom/frontend/components/launches/helpers/use.integration';
 import { newDayjs } from '@gitroom/frontend/components/layout/set.timezone';
+import { VK_COMMUNITY_OAUTH_STATE_PREFIX } from '@gitroom/helpers/utils/vk.oauth';
 import { useVariables } from '@gitroom/react/helpers/variable.context';
 
 interface TwoStepState {
@@ -27,7 +28,14 @@ export const ContinueIntegration: FC<{
   searchParams: any;
   logged: boolean;
 }> = (props) => {
-  const { provider, searchParams, logged } = props;
+  const { searchParams, logged } = props;
+  // Both VK apps use the registered callback. The API validates the OAuth state.
+  const provider =
+    props.provider === 'vk' &&
+    typeof searchParams.state === 'string' &&
+    searchParams.state.startsWith(VK_COMMUNITY_OAUTH_STATE_PREFIX)
+      ? 'vk-community-oauth'
+      : props.provider;
   const { push } = useRouter();
   const t = useT();
   const fetch = useFetch();
