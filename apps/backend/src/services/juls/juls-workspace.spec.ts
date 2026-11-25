@@ -222,7 +222,7 @@ suite('Juls workspace HTTP contract (isolated PostgreSQL)', () => {
         client_secret: clientSecret,
       }),
     });
-    expect(token.status).toBe(201);
+    expect(token.status).toBe(200);
     const credential = await token.json();
     expect(credential.id).toBe(result.organizationId);
     expect(
