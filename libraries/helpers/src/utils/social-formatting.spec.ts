@@ -52,7 +52,13 @@ describe('Social post formatting', () => {
     expect(compileSocialContent('max', source).message).not.toContain(
       'spoiler'
     );
-    for (const platform of ['vk', 'vk-community', 'ok-community', 'threads']) {
+    for (const platform of [
+      'vk',
+      'vk-community',
+      'vk-community-oauth',
+      'ok-community',
+      'threads',
+    ]) {
       expect(compileSocialContent(platform, source).message).toBe(
         'Текст секрет\n3. первый\n4. второй\n> цитата\n  a < b\n    c\nКупить (https://example.org)'
       );
